@@ -94,3 +94,28 @@ python inference_3dgs.py \
 ```
 
 The output is parsed into a structured plan dict via `utils.prompt_utils.parse_planning_output` (V2 + V1 back-compat).
+
+## Upgrading an existing V1 dataset to V2 (no RGB re-download)
+
+If you already have the V1 processed dataset on a target machine, grab the V2
+plans bundle (~23 MB) from the project's Google Drive and run the alignment
+script. Only the per-episode `plan.json` files are touched; the V1 `plan.json`
+is preserved as `plan_v1.json`. RGB / depth / meta are untouched.
+
+```bash
+# 1. Download the V2 plans bundle from gdrive:RoboBrain3DGS/datasets/
+#    -> robobrain-3dgs-v2-plans.tar.zst  (23 MB)
+
+# 2. Run the alignment in place:
+python scripts/align_v2_plans.py \
+  --v1-root /path/to/v1/data/processed \
+  --plans-source robobrain-3dgs-v2-plans.tar.zst
+
+# 3. (optional) Preview first:
+python scripts/align_v2_plans.py \
+  --v1-root /path/to/v1/data/processed \
+  --plans-source robobrain-3dgs-v2-plans.tar.zst \
+  --dry-run
+```
+
+Idempotent: a second run sees the already-V2 plans and skips them.
