@@ -1,0 +1,113 @@
+# RoboBrain-3DGS LoRA Fine-tuning — Planning + idea-B (4x B200 192GB)
+#
+# Target hardware: 4x NVIDIA B200 (192GB HBM3e each).
+# Pipeline: unified_loader (planning task) -> targets include affordance_hint
+#           line per step (idea B), so max_seq_length is bumped vs legacy
+#           affordance task (~3x text per sample).
+#
+# Usage:
+#   deepspeed --num_gpus=4 train.py --config config/train_lora_planning.yaml
+#
+# Memory estimate per GPU: ~110GB / 192GB (57%)
+# Global batch size: 8 * 4 * 4 = 128
+
+# === Model ===
+model:
+  base_model: "/home/edge/Embodied/models/RoboBrain2.5-8B-NV"
+  num_gaussians: 1024
+  sh_degree: 2
+  num_gs_tokens: 64
+  gs_encoder_dim: 512
+  freeze_vision_encoder: true
+  predict_uncertainty: true    # VarSplat-inspired per-Gaussian uncertainty
+  torch_dtype: "bfloat16"
+
+# === Fine-tuning Mode ===
+finetune_mode: "lora"
+
+# === LoRA Configuration ===
+lora:
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  target_modules:
+    - "q_proj"
+    - "v_proj"
+    - "k_proj"
+    - "o_proj"
+  bias: "none"
+  task_type: "CAUSAL_LM"
+
+# === Prompt (Qwen3-VL chat template) ===
+prompt:
+  # System prompt teaches the model to emit affordance_hint BEFORE the (u, v)
+  # coordinate per step (idea-B grounding). The hint constrains the visual
+  # head with the language head, reducing center-of-object bias.
+  system_prompt: >-
+    You are RoboBrain, an embodied AI assistant with 3D spatial understanding
+    specialized in robotic manipulation planning. Given a scene image and a
+    task instruction, output a structured task decomposition with operation
+    primitives and per-stage geometric constraints. Follow a 4-step reasoning
+    process: 1) SCENE ANALYSIS: identify task-relevant objects and their
+    spatial relations; 2) TASK DECOMPOSITION: break the task into 2-5
+    operation primitives at manipulation-semantic granularity; 3) AFFORDANCE
+    REASONING: for each step, name the semantic part to interact with
+    (e.g. "the handle of the mug", "an empty area on the blue towel") as
+    affordance_hint BEFORE predicting [u, v] coordinates; 4) CONSTRAINT
+    SPECIFICATION: organize constraints by category (contact, spatial, pose,
+    direction, safety) with role labels (completion, safety, progress).
+    Output in compact text format starting with Scene: followed by Step N:
+    action(target) lines with affordance_hint, affordance, approach,
+    constraint predicates, and done_when for each step. Do NOT use markdown
+    formatting.
+  disable_system_prompt: false
+  # Bumped from 512 -> 1280: affordance_hint adds ~10-30 tokens per step,
+  # 4-step plans with constraints commonly hit ~900 tokens.
+  max_seq_length: 1280
+
+# === Data ===
+data:
+  unified_root: "/home/edge/Embodied/robobrain_3dgs/data/processed"
+  # null = use all datasets present on disk (after idea-B refine: all 7
+  # datasets in train.json have plan.json with affordance_hint).
+  unified_datasets: null
+  unified_task_type: "planning"
+  image_size: 256
+  camera: "front"
+  max_frames: -1               # -1 = all
+
+# === Training (4x B200, 192GB each) ===
+training:
+  output_dir: "/home/edge/Embodied/robobrain_3dgs/outputs/lora_planning_b200"
+  num_epochs: 3
+  per_device_batch_size: 8     # B200 192GB: 8/GPU * 4 GPU * 4 accum = 128 global
+  gradient_accumulation_steps: 4
+  learning_rate: 2.0e-4        # LoRA adapter LR
+  lr_3d_branch: 1.0e-3         # 3D branch LR (new params, higher)
+  weight_decay: 0.01
+  warmup_ratio: 0.05
+  max_grad_norm: 1.0
+  logging_steps: 10
+  save_steps: 500
+  eval_steps: 200
+  seed: 42
+
+# === Rendering Loss ===
+rendering_loss:
+  enabled: true
+  render_size: 128             # B200 has enough VRAM for higher-res rendering
+  lambda_l1: 0.8
+  lambda_ssim: 0.2
+  lambda_depth: 0.5
+  lambda_opacity: 0.01
+  lambda_uncertainty: 0.1      # VarSplat geometry variance loss
+  weight: 0.1
+
+# === Checkpoint ===
+checkpoint:
+  keep_last_n: 3
+  save_optimizer_state: true
+
+# === DeepSpeed ===
+deepspeed:
+  config: "/home/edge/Embodied/robobrain_3dgs/config/deepspeed_zero2_b200.json"

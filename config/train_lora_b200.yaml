@@ -1,0 +1,87 @@
+# RoboBrain-3DGS LoRA Fine-tuning — B200 Single-GPU (180GB)
+#
+# Usage (single GPU, no DeepSpeed):
+#   python train.py --config config/train_lora_b200.yaml
+#
+# Memory estimate: ~100GB / 180GB (56%)
+# Global batch size: 48 * 1 * 1 = 48
+
+# === Model ===
+model:
+  base_model: "/home/w50037733/models/RoboBrain2.5-8B-NV"
+  num_gaussians: 1024
+  sh_degree: 2
+  num_gs_tokens: 64
+  gs_encoder_dim: 512
+  freeze_vision_encoder: true
+  torch_dtype: "bfloat16"
+
+# === Fine-tuning Mode ===
+finetune_mode: "lora"
+
+# === LoRA Configuration ===
+lora:
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  target_modules:
+    - "q_proj"
+    - "v_proj"
+    - "k_proj"
+    - "o_proj"
+  bias: "none"
+  task_type: "CAUSAL_LM"
+
+# === Prompt (Qwen3-VL chat template) ===
+prompt:
+  system_prompt: >-
+    You are RoboBrain, an embodied AI assistant specialized in robotic
+    manipulation. Given an image of a scene with 3D spatial understanding,
+    provide precise affordance predictions and manipulation constraints.
+  disable_system_prompt: false
+  max_seq_length: 512
+
+# === Data ===
+data:
+  rlbench_root: "/home/w50037733/robobrain_3dgs/data/rlbench_sample"
+  droid_root: "/home/w50037733/robobrain_3dgs/data/droid_sample"
+  image_size: 256
+  camera: "front"
+  max_frames: -1
+
+# === Training ===
+training:
+  output_dir: "outputs/lora_b200"
+  num_epochs: 10
+  per_device_batch_size: 40              # 180GB single GPU (5x throughput vs original 8)
+  gradient_accumulation_steps: 1        # batch already large, no accumulation needed
+  learning_rate: 7.0e-4                 # linear scaling: batch 5x → lr ~3.5x
+  lr_3d_branch: 3.5e-3                  # scale proportionally
+  weight_decay: 0.01
+  warmup_ratio: 0.1                     # 0.05→0.1: larger batch needs longer warmup
+  max_grad_norm: 1.0
+  logging_steps: 5                      # log more often (fewer steps per epoch now)
+  save_steps: 200
+  eval_steps: 50
+  seed: 42
+  use_fused_adam: false                  # no DeepSpeed → use standard AdamW
+
+# === Checkpoint ===
+checkpoint:
+  keep_last_n: 3
+  save_optimizer_state: true
+
+# === Rendering Loss ===
+rendering_loss:
+  enabled: true
+  render_size: 192                      # 128→192: more VRAM, better 3DGS supervision
+  lambda_l1: 0.8
+  lambda_ssim: 0.2
+  lambda_depth: 0.5
+  lambda_opacity: 0.01
+  weight: 0.1
+
+# === DeepSpeed ===
+# Disabled for single-GPU: no communication overhead, pure compute
+# deepspeed:
+#   config: "config/deepspeed_zero1_b200.json"

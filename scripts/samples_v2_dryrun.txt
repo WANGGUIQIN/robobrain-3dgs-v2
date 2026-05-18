@@ -1,0 +1,7 @@
+# 5 representative samples for V2 dry-run
+# Selected to cover: single pick-place, lifted stack, articulated close, multi-step ordered, pour
+bridge/episode_000005
+droid/episode_001022
+rlbench/episode_000000
+bridge/episode_000035
+bridge/episode_021755

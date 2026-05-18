@@ -1,0 +1,100 @@
+# RoboBrain-3DGS LoRA Sanity Run — 2x A100 80GB PCIe
+#
+# Derived from train_lora.yaml. Goal: 1-epoch sanity training to validate the
+# pipeline (loss curves, no OOM, render loss converging) on the actual local
+# hardware. Differences vs train_lora.yaml:
+#   - paths point to real local model + processed data
+#   - per_device_batch_size 8 -> 2  (A100 80GB w/ ~30GB occupied by other users)
+#   - gradient_accumulation_steps 4 -> 8  (keeps effective batch = 2*2*8 = 32)
+#   - num_epochs 3 -> 1  (sanity)
+#   - render_size 128 -> 64  (safe for pure-PyTorch renderer on shared A100)
+#   - save_steps 500 -> 200, eval_steps 200 -> 100  (faster feedback)
+#   - deepspeed: zero2.json (vs zero2_b200.json which doesn't exist locally)
+#
+# Single-GPU:
+#   python train.py --config config/train_lora_a100_sanity.yaml
+# Multi-GPU (2x A100, DeepSpeed ZeRO-2):
+#   deepspeed --num_gpus=2 train.py --config config/train_lora_a100_sanity.yaml
+# Dry-run validation (1 step, no save):
+#   python train.py --config config/train_lora_a100_sanity.yaml --dry_run
+
+# === Model ===
+model:
+  base_model: "/home/edge/RoboBrain/models/RoboBrain2.5-8B-NV"
+  num_gaussians: 1024
+  sh_degree: 2
+  num_gs_tokens: 64
+  gs_encoder_dim: 512
+  freeze_vision_encoder: true
+  predict_uncertainty: true
+  torch_dtype: "bfloat16"
+
+# === Fine-tuning Mode ===
+finetune_mode: "lora"
+
+# === LoRA Configuration ===
+lora:
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  target_modules:
+    - "q_proj"
+    - "v_proj"
+    - "k_proj"
+    - "o_proj"
+  bias: "none"
+  task_type: "CAUSAL_LM"
+
+# === Prompt (Qwen3-VL chat template) ===
+prompt:
+  system_prompt: >-
+    You are RoboBrain, an embodied AI assistant specialized in robotic
+    manipulation. Given an image of a scene with 3D spatial understanding,
+    provide precise affordance predictions and manipulation constraints.
+  disable_system_prompt: false
+  max_seq_length: 512
+
+# === Data ===
+data:
+  unified_root: "/home/edge/RoboBrain/w50037733/data/processed"
+  unified_datasets: null              # null = all 7 available datasets (~27K eps)
+  unified_task_type: "affordance"
+  image_size: 256
+  camera: "front"
+  max_frames: -1                      # -1 = use all episodes
+
+# === Training (2x A100 80GB PCIe, shared) ===
+training:
+  output_dir: "/home/edge/RoboBrain/outputs/lora_sanity"
+  num_epochs: 1                       # SANITY: 1 epoch first; rerun for 3 if curves look good
+  per_device_batch_size: 2            # A100 80GB w/ ~30GB used by other process
+  gradient_accumulation_steps: 8      # effective batch = 2 GPU * 2 * 8 = 32
+  learning_rate: 2.0e-4               # LoRA adapter LR
+  lr_3d_branch: 1.0e-3                # 3D branch LR (new params, higher)
+  weight_decay: 0.01
+  warmup_ratio: 0.05
+  max_grad_norm: 1.0
+  logging_steps: 10
+  save_steps: 200                     # frequent saves so a kill doesn't lose 5h of work
+  eval_steps: 100
+  seed: 42
+
+# === Rendering Loss ===
+rendering_loss:
+  enabled: true
+  render_size: 64                     # safer than 128 on shared A100; preserved as ablation knob
+  lambda_l1: 0.8
+  lambda_ssim: 0.2
+  lambda_depth: 0.5
+  lambda_opacity: 0.01
+  lambda_uncertainty: 0.1
+  weight: 0.3
+
+# === Checkpoint ===
+checkpoint:
+  keep_last_n: 3
+  save_optimizer_state: true
+
+# === DeepSpeed ===
+deepspeed:
+  config: "config/deepspeed_zero2.json"

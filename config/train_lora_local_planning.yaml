@@ -1,0 +1,101 @@
+# RoboBrain-3DGS LoRA — Planning + idea-B (Single 32GB GPU, current hardware)
+#
+# Target hardware: 1x 32GB GPU (current edge box has 4x 32GB).
+# Pipeline: identical to train_lora_planning.yaml (B200) but with batch sizes
+# tuned for 32GB. Use this for local debugging / sanity-check runs before
+# moving to B200 cluster.
+#
+# Usage (single GPU, no DeepSpeed):
+#   CUDA_VISIBLE_DEVICES=3 python train.py --config config/train_lora_local_planning.yaml
+#
+# Memory estimate: ~22GB / 32GB (69%)
+# Global batch size: 2 * 1 * 8 = 16
+
+# === Model ===
+model:
+  base_model: "/home/edge/Embodied/models/RoboBrain2.5-8B-NV"
+  num_gaussians: 256             # smaller for 32GB; B200 uses 1024
+  sh_degree: 2
+  num_gs_tokens: 16              # smaller; B200 uses 64
+  gs_encoder_dim: 256
+  freeze_vision_encoder: true
+  predict_uncertainty: true
+  torch_dtype: "bfloat16"
+
+# === Fine-tuning Mode ===
+finetune_mode: "lora"
+
+# === LoRA Configuration ===
+lora:
+  r: 8                           # smaller adapter to fit 32GB; B200 uses 16
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules:
+    - "q_proj"
+    - "v_proj"
+  bias: "none"
+  task_type: "CAUSAL_LM"
+
+# === Prompt ===
+prompt:
+  system_prompt: >-
+    You are RoboBrain, an embodied AI assistant with 3D spatial understanding
+    specialized in robotic manipulation planning. Given a scene image and a
+    task instruction, output a structured task decomposition with operation
+    primitives and per-stage geometric constraints. Follow a 4-step reasoning
+    process: 1) SCENE ANALYSIS: identify task-relevant objects and their
+    spatial relations; 2) TASK DECOMPOSITION: break the task into 2-5
+    operation primitives at manipulation-semantic granularity; 3) AFFORDANCE
+    REASONING: for each step, name the semantic part to interact with
+    (e.g. "the handle of the mug", "an empty area on the blue towel") as
+    affordance_hint BEFORE predicting [u, v] coordinates; 4) CONSTRAINT
+    SPECIFICATION: organize constraints by category (contact, spatial, pose,
+    direction, safety) with role labels (completion, safety, progress).
+    Output in compact text format starting with Scene: followed by Step N:
+    action(target) lines with affordance_hint, affordance, approach,
+    constraint predicates, and done_when for each step. Do NOT use markdown
+    formatting.
+  disable_system_prompt: false
+  max_seq_length: 1280
+
+# === Data ===
+data:
+  unified_root: "/home/edge/Embodied/robobrain_3dgs/data/processed"
+  unified_datasets: null         # all datasets
+  unified_task_type: "planning"
+  image_size: 256
+  camera: "front"
+  max_frames: -1
+
+# === Training (single 32GB GPU) ===
+training:
+  output_dir: "/home/edge/Embodied/robobrain_3dgs/outputs/lora_planning_local"
+  num_epochs: 3
+  per_device_batch_size: 2       # 32GB ceiling with 1280 seq
+  gradient_accumulation_steps: 8 # global = 2 * 1 * 8 = 16
+  learning_rate: 1.0e-4          # smaller batch -> smaller LR (linear scaling vs B200's 2e-4 / batch 128)
+  lr_3d_branch: 5.0e-4
+  weight_decay: 0.01
+  warmup_ratio: 0.05
+  max_grad_norm: 1.0
+  logging_steps: 5
+  save_steps: 200
+  eval_steps: 100
+  seed: 42
+  use_fused_adam: false          # no DeepSpeed -> standard AdamW
+
+# === Rendering Loss ===
+rendering_loss:
+  enabled: true
+  render_size: 64                # smaller; B200 uses 128
+  lambda_l1: 0.8
+  lambda_ssim: 0.2
+  lambda_depth: 0.5
+  lambda_opacity: 0.01
+  lambda_uncertainty: 0.1
+  weight: 0.1
+
+# === Checkpoint ===
+checkpoint:
+  keep_last_n: 2
+  save_optimizer_state: false    # save space; reload-from-disk fine for local debug

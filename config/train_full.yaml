@@ -1,0 +1,78 @@
+# RoboBrain-3DGS Full Fine-tuning Configuration (4x B200)
+# Usage:
+#   deepspeed --num_gpus=4 train.py --config config/train_full.yaml
+# Note: Full fine-tuning of 8B model requires ZeRO-3 + all 4 GPUs
+
+# === Model ===
+model:
+  base_model: "/home/edge/Embodied/models/RoboBrain2.5-8B-NV"
+  num_gaussians: 1024
+  sh_degree: 2
+  num_gs_tokens: 64
+  gs_encoder_dim: 512
+  freeze_vision_encoder: true
+  predict_uncertainty: true
+  torch_dtype: "bfloat16"
+
+# === Fine-tuning Mode ===
+finetune_mode: "full"
+
+# === Full Fine-tuning Configuration ===
+full_finetune:
+  unfreeze_llm_layers: -1        # -1 = all layers
+  unfreeze_lm_head: true
+  gradient_checkpointing: true
+
+# === Prompt (Qwen3-VL chat template) ===
+prompt:
+  system_prompt: >-
+    You are RoboBrain, an embodied AI assistant specialized in robotic
+    manipulation. Given an image of a scene with 3D spatial understanding,
+    provide precise affordance predictions and manipulation constraints.
+  disable_system_prompt: false
+  max_seq_length: 512
+
+# === Data ===
+data:
+  unified_root: "/home/edge/Embodied/robobrain_3dgs/data/processed"
+  unified_datasets: null
+  unified_task_type: "affordance"
+  image_size: 256
+  camera: "front"
+  max_frames: -1
+
+# === Training (4x B200, 192GB each) ===
+training:
+  output_dir: "/home/edge/Embodied/robobrain_3dgs/outputs/full"
+  num_epochs: 3
+  per_device_batch_size: 4       # B200 192GB + ZeRO-3: 4 per GPU, effective = 4*4*8 = 128
+  gradient_accumulation_steps: 8
+  learning_rate: 5.0e-5          # Lower LR for pretrained LLM weights
+  lr_3d_branch: 1.0e-3           # Higher LR for 3D branch
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  max_grad_norm: 1.0
+  logging_steps: 10
+  save_steps: 500
+  eval_steps: 200
+  seed: 42
+
+# === Rendering Loss ===
+rendering_loss:
+  enabled: true
+  render_size: 128
+  lambda_l1: 0.8
+  lambda_ssim: 0.2
+  lambda_depth: 0.5
+  lambda_opacity: 0.01
+  lambda_uncertainty: 0.1
+  weight: 0.1
+
+# === Checkpoint ===
+checkpoint:
+  keep_last_n: 2
+  save_optimizer_state: true
+
+# === DeepSpeed ===
+deepspeed:
+  config: "/home/edge/Embodied/robobrain_3dgs/config/deepspeed_zero3.json"

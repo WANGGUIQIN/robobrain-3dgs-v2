@@ -1,0 +1,90 @@
+# RoboBrain-3DGS LoRA Fine-tuning — RTX 5090 (4x 32GB)
+#
+# Single-GPU:
+#   python train.py --config config/train_lora_5090.yaml
+#
+# Multi-GPU (DeepSpeed ZeRO-2):
+#   deepspeed --num_gpus=4 train.py --config config/train_lora_5090.yaml
+#
+# Memory estimate per GPU: ~25GB / 32GB (78%)
+# Global batch size (single): 2 * 1 * 4 = 8
+# Global batch size (4-GPU DS): 2 * 4 * 4 = 32
+
+# === Model ===
+model:
+  base_model: "/home/w50037733/models/RoboBrain2.5-8B-NV"
+  num_gaussians: 1024
+  sh_degree: 2
+  num_gs_tokens: 64
+  gs_encoder_dim: 512
+  freeze_vision_encoder: true
+  torch_dtype: "bfloat16"
+
+# === Fine-tuning Mode ===
+finetune_mode: "lora"
+
+# === LoRA Configuration ===
+lora:
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  target_modules:
+    - "q_proj"
+    - "v_proj"
+    - "k_proj"
+    - "o_proj"
+  bias: "none"
+  task_type: "CAUSAL_LM"
+
+# === Prompt (Qwen3-VL chat template) ===
+prompt:
+  system_prompt: >-
+    You are RoboBrain, an embodied AI assistant specialized in robotic
+    manipulation. Given an image of a scene with 3D spatial understanding,
+    provide precise affordance predictions and manipulation constraints.
+  disable_system_prompt: false
+  max_seq_length: 512
+
+# === Data ===
+data:
+  rlbench_root: "/home/w50037733/robobrain_3dgs/data/rlbench_sample"
+  droid_root: "/home/w50037733/robobrain_3dgs/data/droid_sample"
+  image_size: 256
+  camera: "front"
+  max_frames: -1
+
+# === Training ===
+training:
+  output_dir: "outputs/lora_5090"
+  num_epochs: 10
+  per_device_batch_size: 2              # 32GB GPU: max 2 with 8B model
+  gradient_accumulation_steps: 4        # effective batch = 2*4 = 8 (single) or 2*4*4=32 (4-GPU)
+  learning_rate: 2.0e-4
+  lr_3d_branch: 1.0e-3
+  weight_decay: 0.01
+  warmup_ratio: 0.05
+  max_grad_norm: 1.0
+  logging_steps: 10
+  save_steps: 500
+  eval_steps: 100
+  seed: 42
+  use_fused_adam: true                  # Only active with DeepSpeed
+
+# === Checkpoint ===
+checkpoint:
+  keep_last_n: 3
+  save_optimizer_state: true
+
+# === Rendering Loss ===
+rendering_loss:
+  enabled: true
+  render_size: 64                       # 64x64 to fit in 32GB
+  lambda_l1: 0.8
+  lambda_ssim: 0.2
+  lambda_depth: 0.5
+  lambda_opacity: 0.01
+  weight: 0.1
+
+# === DeepSpeed ===
+deepspeed:
+  config: "config/deepspeed_zero1_b200.json"

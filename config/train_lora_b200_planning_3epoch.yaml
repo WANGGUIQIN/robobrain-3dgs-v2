@@ -1,0 +1,109 @@
+# RoboBrain-3DGS LoRA 3-Epoch Run — PLANNING (V2) on 4x B200 180GB
+#
+# V2 protocol (vs prior A100 run):
+#   - target text includes <think>{reasoning}</think> → Goal: → Scene: → per-step
+#     affordance_region (no UV/approach coords). See data/unified_loader.py.
+#   - PLANNING_SYSTEM_PROMPT updated to instruct the model to reason inside
+#     <think>...</think>. See utils/prompt_utils.py.
+#   - max_seq_length=4096 because reasoning pushes p99 ≈ 2700 tokens.
+#
+# Hardware: 4× B200 180GB.
+# Launch:
+#   deepspeed --num_gpus=4 train.py --config config/train_lora_b200_planning_3epoch.yaml
+#
+# Memory budget per GPU (estimate, no grad-checkpointing):
+#   - model bf16 (frozen + LoRA adapter):   16 GB
+#   - LoRA optimizer state (Adam fp32):     0.3 GB (adapter is tiny)
+#   - gradients (LoRA only, bf16):          negligible
+#   - activations (bs=8, seq=4096, bf16):   ~40 GB
+#   - misc (CUDA + DS buffers):             ~10 GB
+#   - TOTAL: ~70 GB / 180 GB (~39%)         ← plenty of headroom to push bs↑
+#
+# Global batch: 4 GPU × 8 × 2 = 64 (matches the full-FT B200 baseline).
+# Expected wall-clock: ~3-4 h on 4× B200 (vs ~12-14h on 2× A100).
+
+# === Model ===
+model:
+  base_model: "/home/edge/RoboBrain/models/RoboBrain2.5-8B-NV"
+  num_gaussians: 1024
+  sh_degree: 2
+  num_gs_tokens: 64
+  gs_encoder_dim: 512
+  freeze_vision_encoder: true
+  predict_uncertainty: true              # 3DGS rendering uncertainty (NOT affordance UV)
+  torch_dtype: "bfloat16"
+
+# === Fine-tuning Mode ===
+finetune_mode: "lora"
+
+# === LoRA Configuration ===
+lora:
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  target_modules:
+    - "q_proj"
+    - "v_proj"
+    - "k_proj"
+    - "o_proj"
+  bias: "none"
+  task_type: "CAUSAL_LM"
+
+# === Prompt (Qwen3-VL chat template) ===
+# When unified_task_type="planning", train_step uses PLANNING_SYSTEM_PROMPT from
+# utils/prompt_utils.py (V2-protocol prompt). The system_prompt below is fallback
+# for non-planning samples.
+prompt:
+  system_prompt: >-
+    You are RoboBrain, an embodied AI assistant specialized in robotic
+    manipulation. Given an image of a scene with 3D spatial understanding,
+    provide precise affordance predictions and manipulation constraints.
+  disable_system_prompt: false
+  max_seq_length: 4096                   # V2 reasoning-first target: p99 ≈ 2700 tok
+
+# === Data ===
+data:
+  unified_root: "/home/edge/RoboBrain/w50037733_v2/data/processed"  # V2 plans live here (w50037733 still has V1 plans)
+  unified_datasets: null                 # all 7 datasets (~27K episodes)
+  unified_task_type: "planning"
+  image_size: 256
+  camera: "front"
+  max_frames: -1
+
+# === Training (4× B200 180GB, DeepSpeed ZeRO-2) ===
+training:
+  output_dir: "/home/edge/RoboBrain/outputs/lora_planning_3epoch_b200"
+  num_epochs: 3
+  per_device_batch_size: 8               # B200 180GB easily fits; bs=16 also viable
+  gradient_accumulation_steps: 2         # 4 GPU × 8 × 2 = effective 64
+  learning_rate: 2.0e-4
+  lr_3d_branch: 1.0e-3
+  weight_decay: 0.01
+  warmup_ratio: 0.05
+  max_grad_norm: 1.0
+  logging_steps: 10
+  save_steps: 250                        # ~3× faster wall-clock → save more frequently
+  eval_steps: 125
+  seed: 42
+
+# === Rendering Loss ===
+rendering_loss:
+  enabled: true
+  render_size: 64
+  lambda_l1: 0.8
+  lambda_ssim: 0.2
+  lambda_depth: 0.5
+  lambda_opacity: 0.01
+  lambda_uncertainty: 0.1
+  weight: 0.3
+
+# === Checkpoint ===
+checkpoint:
+  keep_last_n: 100                       # keep every ckpt so epoch boundaries survive
+  save_optimizer_state: true
+
+# === DeepSpeed ===
+# ZeRO-2 is sufficient for LoRA (nothing big to shard — adapter optimizer state
+# is < 1 GB). ZeRO-1 or pure DDP would also work; ZeRO-2 kept for parity.
+deepspeed:
+  config: "config/deepspeed_zero2_b200.json"

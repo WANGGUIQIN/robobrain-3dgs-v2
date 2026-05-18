@@ -1,0 +1,107 @@
+# RoboBrain-3DGS Full Fine-tuning — PLANNING (V2) on 4x B200 180GB
+#
+# Comparison baseline to train_lora_b200_planning_3epoch.yaml.
+# User's empirical finding: LoRA tends to outperform full FT on this task —
+# run this as a baseline, not the recommended path.
+#
+# V2 protocol:
+#   - target text: <think>{reasoning}</think> → Goal: → Scene: → per-step
+#     affordance_region (no UV coords). See data/unified_loader.py.
+#   - PLANNING_SYSTEM_PROMPT updated in utils/prompt_utils.py.
+#   - max_seq_length=4096 because reasoning pushes p99 ≈ 2700 tokens.
+#
+# Hardware: 4× B200 180GB.
+# Launch:
+#   deepspeed --num_gpus=4 train.py --config config/train_full_b200_planning.yaml
+#
+# Memory budget per GPU (estimate, no grad-checkpointing, ZeRO-2):
+#   - model bf16 (full copy):                16 GB
+#   - gradients bf16, sharded ZeRO-2:        16/4 =  4 GB
+#   - optimizer fp32 m+v+master, sharded:    96/4 = 24 GB
+#   - activations (bs=4, seq=4096, bf16):    ~30 GB
+#   - misc (CUDA + DS buffers):              ~12 GB
+#   - TOTAL: ~86 GB / 180 GB (~48%)          ← if OOM, drop to bs=2 + grad_accum=8
+#
+# Global batch: 4 GPU × 4 × 4 = 64 (matches the LoRA B200 config).
+# Expected wall-clock: ~6-8 h on 4× B200 (full FT runs ~2× slower than LoRA).
+
+# === Model ===
+model:
+  base_model: "/home/edge/RoboBrain/models/RoboBrain2.5-8B-NV"
+  num_gaussians: 1024
+  sh_degree: 2
+  num_gs_tokens: 64
+  gs_encoder_dim: 512
+  freeze_vision_encoder: true
+  predict_uncertainty: true              # 3DGS rendering uncertainty (NOT affordance UV)
+  torch_dtype: "bfloat16"
+
+# === Fine-tuning Mode ===
+finetune_mode: "full"
+
+# === Full Fine-tuning Configuration ===
+full_finetune:
+  unfreeze_llm_layers: -1                # all 36 layers
+  unfreeze_lm_head: true
+  gradient_checkpointing: false          # 180 GB headroom is enough; skip recompute for ~30% speedup
+
+# === Prompt (Qwen3-VL chat template) ===
+# When unified_task_type="planning", train_step uses PLANNING_SYSTEM_PROMPT from
+# utils/prompt_utils.py (V2-protocol prompt). The system_prompt below is fallback
+# for non-planning samples.
+prompt:
+  system_prompt: >-
+    You are RoboBrain, an embodied AI assistant specialized in robotic
+    manipulation. Given an image of a scene with 3D spatial understanding,
+    provide precise affordance predictions and manipulation constraints.
+  disable_system_prompt: false
+  max_seq_length: 4096                   # V2 reasoning-first target: p99 ≈ 2700 tok
+
+# === Data ===
+data:
+  unified_root: "/home/edge/RoboBrain/w50037733_v2/data/processed"  # V2 plans live here (w50037733 still has V1 plans)
+  unified_datasets: null
+  unified_task_type: "planning"
+  image_size: 256
+  camera: "front"
+  max_frames: -1
+
+# === Training (4× B200 180GB, DeepSpeed ZeRO-2) ===
+training:
+  output_dir: "/home/edge/RoboBrain/outputs/full_planning_3epoch_b200"
+  num_epochs: 3
+  per_device_batch_size: 4               # full FT activations ~2× LoRA at same bs
+  gradient_accumulation_steps: 4         # 4 GPU × 4 × 4 = effective 64
+  learning_rate: 5.0e-5                  # full FT: 4× lower than LoRA (whole LLM moves)
+  lr_3d_branch: 1.0e-3
+  weight_decay: 0.01
+  warmup_ratio: 0.1                      # longer warmup for full-FT stability
+  max_grad_norm: 1.0
+  logging_steps: 10
+  save_steps: 500
+  eval_steps: 200
+  seed: 42
+  use_fused_adam: true                   # ~10% speedup with DeepSpeed
+
+# === Rendering Loss ===
+rendering_loss:
+  enabled: true
+  render_size: 128
+  lambda_l1: 0.8
+  lambda_ssim: 0.2
+  lambda_depth: 0.5
+  lambda_opacity: 0.01
+  lambda_uncertainty: 0.1
+  weight: 0.1
+
+# === Checkpoint ===
+# Full FT ckpt is huge: 16 GB weights + 32 GB optimizer (FP32 master) = 48 GB/ckpt.
+# keep_last_n=2 → peak disk ≈ 2 × 48 + best ≈ 144 GB.
+checkpoint:
+  keep_last_n: 2
+  save_optimizer_state: true
+
+# === DeepSpeed ===
+# ZeRO-2: shard optimizer + gradients across 4 GPUs (no CPU offload — B200 has plenty).
+deepspeed:
+  config: "config/deepspeed_zero2_b200.json"
