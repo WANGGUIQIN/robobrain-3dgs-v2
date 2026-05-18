@@ -212,6 +212,15 @@ class UnifiedDataset(Dataset):
                     continue
                 parts = []
                 for c in cat_constraints:
+                    # GPT occasionally emits a pre-formatted "pred(args)" string
+                    # instead of {"pred": ..., "args": [...]}; accept either.
+                    if isinstance(c, str):
+                        entry = c.strip()
+                        if entry:
+                            parts.append(entry)
+                        continue
+                    if not isinstance(c, dict) or "pred" not in c:
+                        continue
                     pred = c["pred"]
                     args = ", ".join(str(a) for a in c.get("args", []))
                     role = c.get("role", "safety" if cat == "safety" else "")
@@ -219,7 +228,8 @@ class UnifiedDataset(Dataset):
                     if role and not (cat == "safety" and role == "safety"):
                         entry += f" [{role}]"
                     parts.append(entry)
-                lines.append(f"  {cat}: {'; '.join(parts)}")
+                if parts:
+                    lines.append(f"  {cat}: {'; '.join(parts)}")
 
             if done:
                 lines.append(f"  done_when: {done}")
