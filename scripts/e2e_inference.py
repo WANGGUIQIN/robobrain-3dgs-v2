@@ -50,7 +50,7 @@ from utils.visualize_inference import render as render_inference
 sys.path.insert(0, str(ROOT))
 from run_inference import format_plan_as_json  # type: ignore
 
-from postprocess_affordance import GroundingSAM, refine_plan, visualize as viz_refined
+from postprocess_affordance import GroundingSAM, refine_plan
 
 
 # ---------------------------------------------------------------------------
@@ -64,21 +64,18 @@ def refine_with_langsam(
     grounder: "GroundingSAM",
     strategy: str = "inscribed",
     intrinsics: np.ndarray | None = None,
-) -> dict:
-    """Apply Lang-SAM post-processor to a structured plan dict.
+) -> tuple[dict, list[dict | None]]:
+    """Apply Lang-SAM post-processor to a plan dict.
 
-    Mirrors --refine-affordance semantics: the refined affordance overwrites
-    `step["affordance"]`, while the original LoRA-emitted value is preserved
-    under `step["affordance_lora"]` for A/B comparison. This makes
-    render_inference display the refined point by default. Steps where
-    refinement failed (no_mask without coarse-uv fallback) keep the
-    original `affordance` untouched.
+    Returns (clean_plan, masks_per_step). The plan dict is stripped of every
+    Lang-SAM-injected field so it matches the training plan.json schema
+    exactly (task / reasoning / goal / scene_objects / steps[step / action /
+    target / destination / affordance_region / constraints / done_when]).
+    Lang-SAM masks + refined coordinates ride alongside in masks_per_step
+    so the visualizer can draw region overlays without polluting the JSON
+    output that downstream tooling consumes.
     """
-    # Snapshot the lora-emitted coords before refinement runs
     snapshot = copy.deepcopy(structured)
-    for s in snapshot.get("steps", []):
-        if "affordance" in s:
-            s["affordance_lora"] = list(s["affordance"])
 
     rgb = Image.open(image_path).convert("RGB")
     depth = np.load(depth_path) if depth_path and os.path.exists(depth_path) else None
@@ -89,41 +86,24 @@ def refine_with_langsam(
                                [0, H / 2, H / 2],
                                [0, 0, 1]], dtype=np.float32)
 
-    refined = refine_plan(rgb, depth, intrinsics, snapshot, grounder, strategy=strategy)
+    refined, masks_per_step = refine_plan(
+        rgb, depth, intrinsics, snapshot, grounder,
+        strategy=strategy, return_masks=True,
+    )
 
-    # Consolidate Lang-SAM injections into a single `grounding` sub-dict so
-    # the canonical plan.json schema (step / action / target / destination /
-    # affordance_region / constraints / done_when) is unaffected. Anything
-    # the post-processor added at step root gets moved here and the root is
-    # left clean. Skip steps that had no mask (status="no_mask").
-    grounding_keys = {
-        "refine_status":      "status",
-        "refine_prompt":      "prompt",
-        "refine_strategy":    "strategy",
-        "refine_confidence":  "confidence",
-        "refine_cache_hit":   "cache_hit",
-        "affordance_refined":    "affordance_2d",
-        "affordance_3d_refined": "affordance_3d",
-        "approach_refined":      "approach",
-    }
+    # Strip every Lang-SAM injection so the plan matches plan.json exactly.
+    lang_sam_keys = (
+        "refine_status", "refine_prompt", "refine_strategy",
+        "refine_confidence", "refine_cache_hit",
+        "affordance_refined", "affordance_3d_refined", "approach_refined",
+        # V1 leftovers that the old refiner used to populate
+        "affordance", "approach", "affordance_lora", "affordance_hint",
+    )
     for s in refined.get("steps", []):
-        g = {}
-        for src, dst in grounding_keys.items():
-            if src in s:
-                val = s.pop(src)
-                g[dst] = list(val) if isinstance(val, (list, tuple)) else val
-        # Strip any V1-era top-level coords the old wrapper used to write.
-        for k in ("affordance", "approach", "affordance_lora", "affordance_hint"):
+        for k in lang_sam_keys:
             s.pop(k, None)
-        if g.get("status") == "no_mask":
-            # Don't surface a useless grounding={"status": "no_mask"} block —
-            # leave the step canonical. The lifted affordance_region remains
-            # for a downstream re-ground attempt.
-            continue
-        if g:
-            s["grounding"] = g
 
-    return refined
+    return refined, masks_per_step
 
 
 def _load_intrinsics_from_meta(image_path: str) -> np.ndarray | None:
@@ -263,13 +243,14 @@ def main():
 
             out = run_single(model, image, depth, text, args.task,
                              args.temperature, args.max_tokens)
+            masks_per_step: list | None = None
             if args.refine_affordance and args.task == "planning":
                 out["structured"] = model.refine_affordance_via_base(
                     out["structured"], image,
                 )
             if args.refine_langsam and args.task == "planning":
                 K = _load_intrinsics_from_meta(image)
-                out["structured"] = refine_with_langsam(
+                out["structured"], masks_per_step = refine_with_langsam(
                     out["structured"], image, depth, grounder,
                     strategy=args.strategy, intrinsics=K,
                 )
@@ -287,18 +268,11 @@ def main():
                 viz_dir = Path(args.output_dir) if args.output_dir else ep_dir
                 viz_path = viz_dir / f"{ep_dir.name}_viz.png"
                 try:
-                    render_inference(image, out["structured"], args.task, viz_path)
+                    render_inference(image, out["structured"], args.task,
+                                     viz_path, masks=masks_per_step)
                     print(f"  viz -> {viz_path}")
                 except Exception as e:
                     print(f"  WARN render_inference failed: {e}")
-
-                # Extra: side-by-side viz that also shows orig vs refined points
-                if args.refine_langsam:
-                    try:
-                        viz_refined(ep_dir, out["structured"],
-                                    viz_dir / f"{ep_dir.name}_refined_viz.png")
-                    except Exception as e:
-                        print(f"  WARN refined viz failed: {e}")
 
     # =================================================================
     # Single-scene mode (--image)
@@ -307,13 +281,14 @@ def main():
         out = run_single(model, args.image, args.depth,
                          args.text or "describe the scene", args.task,
                          args.temperature, args.max_tokens)
+        masks_per_step: list | None = None
         if args.refine_affordance and args.task == "planning":
             out["structured"] = model.refine_affordance_via_base(
                 out["structured"], args.image,
             )
         if args.refine_langsam and args.task == "planning":
             K = _load_intrinsics_from_meta(args.image)
-            out["structured"] = refine_with_langsam(
+            out["structured"], masks_per_step = refine_with_langsam(
                 out["structured"], args.image, args.depth, grounder,
                 strategy=args.strategy, intrinsics=K,
             )
@@ -332,29 +307,11 @@ def main():
                     Path(args.image).stem + "_viz.png"
                 )
             try:
-                render_inference(args.image, out["structured"], args.task, viz_path)
+                render_inference(args.image, out["structured"], args.task,
+                                 viz_path, masks=masks_per_step)
                 print(f"viz -> {viz_path}")
             except Exception as e:
                 print(f"WARN render_inference failed: {e}")
-
-            if args.refine_langsam:
-                # Build a temporary "episode dir" with the rgb so viz_refined works
-                episode_dir = (
-                    Path(args.image).parent
-                    if (Path(args.image).parent / f"rgb_0.png").exists()
-                    else Path(args.output_dir or ".")
-                )
-                refined_viz = (
-                    Path(args.output_dir) / "result_refined_viz.png"
-                    if args.output_dir
-                    else Path(args.image).with_name(
-                        Path(args.image).stem + "_refined_viz.png"
-                    )
-                )
-                try:
-                    viz_refined(episode_dir, out["structured"], refined_viz)
-                except Exception as e:
-                    print(f"WARN refined viz failed: {e}")
     else:
         parser.print_help()
         sys.exit(1)

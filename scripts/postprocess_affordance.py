@@ -426,7 +426,8 @@ def refine_plan(
     grounder: GroundingSAM,
     strategy: str = "inscribed",
     consistency_thresh: float = 0.5,
-) -> dict:
+    return_masks: bool = False,
+) -> dict | tuple[dict, list[dict | None]]:
     """Refine a plan dict in-place. Works for both training and inference formats.
 
     Inference-format support:
@@ -441,6 +442,9 @@ def refine_plan(
     plan_task = plan.get("task", "")
     refined_steps = []
     mask_cache: dict[str, tuple[np.ndarray, float, str]] = {}  # target -> (mask, score, prompt)
+    # Per-step mask payload for region-style visualization. None when SAM
+    # failed to find a mask. Aligned 1:1 with refined_steps.
+    masks_per_step: list[dict | None] = []
 
     for step in plan.get("steps", []):
         target = (step.get("target") or "").strip()
@@ -476,6 +480,7 @@ def refine_plan(
             new_step["refine_status"] = "no_mask_fallback" if coarse_uv else "no_mask"
             new_step["refine_confidence"] = 0.0
             refined_steps.append(new_step)
+            masks_per_step.append(None)
             continue
 
         if depth is None:
@@ -499,8 +504,14 @@ def refine_plan(
         new_step["refine_strategy"] = strategy
         new_step["refine_confidence"] = round(res.confidence, 4)
         refined_steps.append(new_step)
+        masks_per_step.append({
+            "mask": mask, "score": score, "prompt": prompt,
+            "uv": (res.u, res.v),
+        })
 
     plan["steps"] = refined_steps
+    if return_masks:
+        return plan, masks_per_step
     return plan
 
 
