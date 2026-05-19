@@ -279,6 +279,19 @@ def parse_planning_output(text: str) -> dict:
     if think_m:
         result["reasoning"] = think_m.group(1).strip()
         text = _THINK_RE.sub("", text)
+    else:
+        # V2-trained LoRA emits literal <think> tags; base / non-LoRA models
+        # under zero-shot often drop the tags and produce a bare reasoning
+        # preamble ("SCENE ANALYSIS - ... STRATEGY - ... AFFORDANCE
+        # REASONING - ...") ahead of the Goal: line. Recover it so the
+        # exported plan still surfaces the reasoning supervision signal.
+        goal_pos = _GOAL_LINE_RE.search(text)
+        if goal_pos:
+            preamble = text[: goal_pos.start()].strip()
+            if re.search(r"\b(SCENE ANALYSIS|STRATEGY|AFFORDANCE REASONING)\b",
+                         preamble, re.I):
+                result["reasoning"] = preamble
+                text = text[goal_pos.start():]
 
     # Goal line — lifted predicates separated by ';'.
     goal_m = _GOAL_LINE_RE.search(text)

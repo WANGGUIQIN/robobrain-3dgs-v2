@@ -105,6 +105,11 @@ def format_plan_as_json(raw_text: str, task: str) -> dict:
 
     plan = {
         "task": task,
+        # V2 fields — surface the causal reasoning and lifted goal predicates
+        # that the model emits before the per-step plan. Without these, the
+        # exported JSON loses the supervision signal the model was trained on.
+        "reasoning": parsed.get("reasoning", ""),
+        "goal": parsed.get("goal", []),
         "scene_objects": parsed.get("scene_objects", []),
         "num_steps": len(parsed.get("steps", [])),
         "steps": [],
@@ -118,6 +123,10 @@ def format_plan_as_json(raw_text: str, task: str) -> dict:
         }
         if step.get("destination"):
             s["destination"] = step["destination"]
+        # V2: textual affordance_region (Lang-SAM grounds it at runtime).
+        if step.get("affordance_region"):
+            s["affordance_region"] = step["affordance_region"]
+        # V1 back-compat: numerical affordance_hint kept for old checkpoints.
         if step.get("affordance_hint"):
             s["affordance_hint"] = step["affordance_hint"]
         if step.get("affordance"):
