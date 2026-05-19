@@ -827,7 +827,7 @@ if __name__ == "__main__":
                         help="Task description text")
     parser.add_argument("--task", default="affordance",
                         choices=["affordance", "pointing", "trajectory",
-                                 "grounding", "general"],
+                                 "grounding", "general", "planning"],
                         help="Task type")
     parser.add_argument("--plot", action="store_true",
                         help="Save annotated result image to ./result/")

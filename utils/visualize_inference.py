@@ -72,8 +72,9 @@ def _norm_to_pixel(u: float, v: float, w: int, h: int) -> tuple[int, int]:
 def _iter_planning_points(structured: dict) -> Iterable[tuple[int, str, str, str, list[float]]]:
     """Yield (step_num, action, target, hint, [u, v]) for each step with affordance.
 
-    `hint` is the affordance_hint string (idea B) or empty if absent — caller
-    decides whether to include it in the rendered label.
+    `hint` is the affordance_region string (V2) or affordance_hint (V1
+    back-compat), empty if neither is present — caller decides whether to
+    include it in the rendered label.
     """
     for s in structured.get("steps", []):
         aff = s.get("affordance")
@@ -83,7 +84,7 @@ def _iter_planning_points(structured: dict) -> Iterable[tuple[int, str, str, str
             s.get("step", 0),
             s.get("action", "?"),
             s.get("target", "?"),
-            s.get("affordance_hint", "") or "",
+            s.get("affordance_region") or s.get("affordance_hint") or "",
             aff,
         )
 
