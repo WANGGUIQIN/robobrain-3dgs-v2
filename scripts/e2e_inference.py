@@ -91,14 +91,37 @@ def refine_with_langsam(
 
     refined = refine_plan(rgb, depth, intrinsics, snapshot, grounder, strategy=strategy)
 
-    # Overwrite affordance with refined coords so render_inference picks them up.
-    # Skip when refinement produced nothing (no_mask without fallback).
+    # Consolidate Lang-SAM injections into a single `grounding` sub-dict so
+    # the canonical plan.json schema (step / action / target / destination /
+    # affordance_region / constraints / done_when) is unaffected. Anything
+    # the post-processor added at step root gets moved here and the root is
+    # left clean. Skip steps that had no mask (status="no_mask").
+    grounding_keys = {
+        "refine_status":      "status",
+        "refine_prompt":      "prompt",
+        "refine_strategy":    "strategy",
+        "refine_confidence":  "confidence",
+        "refine_cache_hit":   "cache_hit",
+        "affordance_refined":    "affordance_2d",
+        "affordance_3d_refined": "affordance_3d",
+        "approach_refined":      "approach",
+    }
     for s in refined.get("steps", []):
-        new_aff = s.get("affordance_refined")
-        if new_aff is not None and s.get("refine_status") != "no_mask":
-            s["affordance"] = list(new_aff)
-        if s.get("approach_refined") and s.get("refine_status") == "ok":
-            s["approach"] = list(s["approach_refined"])
+        g = {}
+        for src, dst in grounding_keys.items():
+            if src in s:
+                val = s.pop(src)
+                g[dst] = list(val) if isinstance(val, (list, tuple)) else val
+        # Strip any V1-era top-level coords the old wrapper used to write.
+        for k in ("affordance", "approach", "affordance_lora", "affordance_hint"):
+            s.pop(k, None)
+        if g.get("status") == "no_mask":
+            # Don't surface a useless grounding={"status": "no_mask"} block —
+            # leave the step canonical. The lifted affordance_region remains
+            # for a downstream re-ground attempt.
+            continue
+        if g:
+            s["grounding"] = g
 
     return refined
 

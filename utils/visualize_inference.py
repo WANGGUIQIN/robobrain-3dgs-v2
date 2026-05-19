@@ -77,7 +77,9 @@ def _iter_planning_points(structured: dict) -> Iterable[tuple[int, str, str, str
     include it in the rendered label.
     """
     for s in structured.get("steps", []):
-        aff = s.get("affordance")
+        # Canonical V2 location after Lang-SAM refinement; fall back to the
+        # legacy root-level field for plans produced by older inference runs.
+        aff = (s.get("grounding") or {}).get("affordance_2d") or s.get("affordance")
         if not aff or len(aff) < 2:
             continue
         yield (

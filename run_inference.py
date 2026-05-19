@@ -103,41 +103,30 @@ def format_plan_as_json(raw_text: str, task: str) -> dict:
     if not parsed.get("steps"):
         parsed = _parse_markdown_plan(raw_text)
 
+    # Schema is locked to the dataset's plan.json shape produced by
+    # scripts/generate_plans_v2.py — same keys, same order, same defaults.
+    # This makes inference output a drop-in replacement for a training
+    # plan.json (no num_steps, no V1 leftovers like affordance_hint /
+    # affordance / approach). Lang-SAM grounding lives under an additive
+    # step["grounding"] sub-dict so the canonical schema stays clean.
     plan = {
         "task": task,
-        # V2 fields — surface the causal reasoning and lifted goal predicates
-        # that the model emits before the per-step plan. Without these, the
-        # exported JSON loses the supervision signal the model was trained on.
         "reasoning": parsed.get("reasoning", ""),
         "goal": parsed.get("goal", []),
         "scene_objects": parsed.get("scene_objects", []),
-        "num_steps": len(parsed.get("steps", [])),
         "steps": [],
     }
 
     for step in parsed.get("steps", []):
-        s = {
+        plan["steps"].append({
             "step": step.get("step"),
             "action": step.get("action"),
             "target": step.get("target"),
-        }
-        if step.get("destination"):
-            s["destination"] = step["destination"]
-        # V2: textual affordance_region (Lang-SAM grounds it at runtime).
-        if step.get("affordance_region"):
-            s["affordance_region"] = step["affordance_region"]
-        # V1 back-compat: numerical affordance_hint kept for old checkpoints.
-        if step.get("affordance_hint"):
-            s["affordance_hint"] = step["affordance_hint"]
-        if step.get("affordance"):
-            s["affordance"] = step["affordance"]
-        if step.get("approach"):
-            s["approach"] = step["approach"]
-        if step.get("constraints"):
-            s["constraints"] = step["constraints"]
-        if step.get("done_when"):
-            s["done_when"] = step["done_when"]
-        plan["steps"].append(s)
+            "destination": step.get("destination", ""),
+            "affordance_region": step.get("affordance_region", ""),
+            "constraints": step.get("constraints", {}),
+            "done_when": step.get("done_when", ""),
+        })
 
     return plan
 
