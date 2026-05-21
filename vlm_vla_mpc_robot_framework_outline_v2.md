@@ -58,6 +58,8 @@ VLM 能输出的 predicate 集合 ≡ MPC 能算的 predicate 集合 ≡ Supervi
 
 ## 2. 修订后的总体架构
 
+> 论文主图视觉版本见 [`framework_v2_main_figure.svg`](./framework_v2_main_figure.svg)（reproducible via [`make_framework_figure.py`](./make_framework_figure.py)）。下方 ASCII 图为可在 markdown 直接显示的简化版本。
+
 ```text
                        User Instruction
                               │
