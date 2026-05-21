@@ -25,7 +25,7 @@
 | 假设 VLM 输出包含 arm 标签和 handover step | **VLM embodiment-agnostic**，arm assignment 和 handover 由 Embodiment Grounder 推断 | 双臂训练数据稀缺；同一 VLM 跨 embodiment 复用 |
 | 静态 plan（target / location / affordance 写死，runtime 不变）| **Deferred references + Scene Blackboard + L2.5 Semantic Resolver**：plan 含 `?placeholder`，每步入口由 VLM-primary + rule-fallback 解析；runtime 可加约束、可 refine affordance | 散落 / 不可预测 layout 必须 closed-loop；VLM 的 world knowledge 必须在 runtime 持续贡献，否则架构等于"花 7B 参数训了个填空模板生成器" |
 | MPC 限定为 constraint projector（无 forward dynamics） | **Hybrid MPC（Stage A/B/C with PointWorld）**：A = constraint projector（默认）；B = PointWorld 单步预测（接触瞬间 / 关键事件）；C = PointWorld CEM/MPPI 多步优化（contact-rich / 双臂耦合）。Mode 由 VLM plan 的 `mpc_mode` hint 或 L2.5 动态选择 | 单纯 constraint projector 看不到 H 步后的延迟违反（"推 5 步后碗会倾倒"）；PointWorld always-on 又太贵——按任务复杂度三档 **lazy evaluation of expensive predictions** |
-| 单向 pipeline：VLM → 执行；失败再 replan | **执行前 plan-critique-revise 闭环（§11.6）**：VLM 出 plan v0 → PointWorld + VLA dry-run 评估 → Critique Synthesizer 反馈 → VLM 修订 → ≤ 3 次迭代收敛后开始执行；执行中保留轻量版同机制（接到 L3 supervisor） | 单向 pipeline 把所有错误推到 runtime catch，开销大、cascading failure 频繁；pre-execution refinement 用 ≤ 30s 换 minutes 级 runtime 失败成本 |
+| 单向 pipeline：VLM → 执行；失败再 replan | **Streaming Plan Refinement（§11.6，执行中并行精化）**：启动只做 ~1–2s Quick Pre-Execution Check；精化器后台并行，永远只精化 lookahead 窗口内的下一两个 stage；每 stage 单轮 critique-revise；Stage A 始终兜底 | 早期 v2 的 pre-execution 模式启动 ~30s 不可接受，且 PointWorld 远端预测累积误差大；streaming 把精化与执行解耦，startup ≤ 2s，远端 stage 总是在执行前才被精化（避免依赖不可信的远期预测）|
 | Embodiment Grounder "启发式 + IK"（未指定栈） | **5 子组件具体栈**：cuRobo（首推）做 IK + collision；WorkspaceMap 预计算 voxel reachability（μs lookup）；ArmAssigner 启发式打分 + L2.5 VLM fallback；HandoverPlanner 模板化；CoManipulationDetector 规则触发 | 含糊技术选型导致工程不可估时；cuRobo 与 PointWorld **共享 GPU + URDF + mesh**，infra 复用避免双套维护 |
 
 ---
@@ -69,29 +69,15 @@ VLM 能输出的 predicate 集合 ≡ MPC 能算的 predicate 集合 ≡ Supervi
               │  (embodiment-agnostic)        │   • <think> + Goal + Scene
               └───────────────────────────────┘   • per-step ?refs + binders
                               │                   • mpc_mode hints
-                              │                   • refinement_recommendation
+                              │                   • lookahead (0/1/2/3)
                               ▼
-  ╔═══════════════════════════════════════════════════════════════════╗
-  ║  Pre-Execution Refinement Loop  (§11.6, N ≤ 3 iter, ~30s budget)   ║
-  ║                                                                     ║
-  ║    ┌──────────────────────┐    ┌──────────────────────┐           ║
-  ║    │  PointWorld          │    │  VLA (forward-pass    │           ║
-  ║    │  全 plan rollout     │    │   only, no execute)   │           ║
-  ║    │  → predicted traj    │    │  → action entropy     │           ║
-  ║    │  → violation report  │    │    per stage          │           ║
-  ║    └──────────┬───────────┘    └──────────┬────────────┘           ║
-  ║               └────────────┬─────────────-┘                         ║
-  ║                            ▼                                         ║
-  ║    ┌──────────────────────────────────────────────────┐             ║
-  ║    │  Critique Synthesizer (root-cause analysis)       │             ║
-  ║    └──────────┬───────────────────────────────────────┘             ║
-  ║               ▼                                                       ║
-  ║    ┌──────────────────────┐                                          ║
-  ║    │  converged? (process │ ── no ──→ VLM revise(plan, critique)     ║
-  ║    │  + goal + VLA conf)  │             ↑ loop back                  ║
-  ║    └──────────┬───────────┘                                          ║
-  ╚═══════════════│═══════════════════════════════════════════════════════╝
-                  ▼ yes / budget exhausted → refined plan
+              ┌───────────────────────────────────┐
+              │  Quick Pre-Execution Check (§11.6.2)│  ~1–2s
+              │  仅 stage 1 + high-risk stage 单步 │
+              │  PointWorld 检查; 不评估远端       │
+              └───────────────────────────────────┘
+                              │ → 立即开始执行
+                              ▼
               ┌───────────────────────────────┐
               │  Embodiment Grounder (§5.6)    │
               │  • cuRobo IK + collision       │
@@ -109,45 +95,45 @@ VLM 能输出的 predicate 集合 ≡ MPC 能算的 predicate 集合 ≡ Supervi
   ║   + PointWorld preview query (可选)                                 ║
   ╚═══════════════════════════════════════════════════════════════════╝
                               ↓ resolved step (concrete targets + cstrs)
-   ╔══════════════════════════════════════════════════════════════════╗
-   ║  Inner Loop (L1+L2, 10–30 Hz; lower with Stage C)                 ║
-   ║                                                                    ║
-   ║   obs_t (RGB-D) → Perception → point_cloud_t                      ║
-   ║   point_cloud_t, plan → VLA → a_t                                 ║
-   ║              ↓                                                     ║
-   ║   ┌───────────────────────────────────────────────────────┐      ║
-   ║   │  MPC Selector (per stage's mpc_mode, §7)               │      ║
-   ║   │   Stage A: constraint_projector(state, a_t)           │      ║
-   ║   │   Stage B: pointworld_singlestep(pc_t, a_t)            │      ║
-   ║   │   Stage C: pointworld_cem(pc_t, a_t, H=8, K=64)        │      ║
-   ║   └───────────────────────────────────────────────────────┘      ║
-   ║              ↓                                                     ║
-   ║   Stage A sanity check (always on; tier above's a_t* 再过一遍)    ║
-   ║              ↓                                                     ║
-   ║   robot.execute(a_t*)                                             ║
-   ║                                                                    ║
-   ║   PointWorld Diagnostic (every N step):                           ║
-   ║     compare predicted vs observed → if drift > θ:                 ║
-   ║       flag supervisor → downgrade_mpc_mode                        ║
-   ╚════════════════════════════════════════════════════════════════════╝
+   ╔══════════════════════════════════════════╗  ┌──────────────────────────┐
+   ║  Inner Loop (L1+L2, 10–30 Hz)              ║  │ Streaming Refiner (§11.6) │
+   ║  (Stage C 时降到 2–5 Hz)                    ║◄─┤ 与执行并行 · 后台 worker  │
+   ║                                            ║  │                          │
+   ║   obs_t (RGB-D) → Perception → pc_t        ║  │ for each stage 在        │
+   ║   pc_t, plan → VLA → a_t                   ║  │ lookahead 窗口内:        │
+   ║              ↓                              ║  │  ① 读 blackboard state   │
+   ║   ┌───────────────────────────────┐        ║  │  ② PointWorld H-step    │
+   ║   │  MPC Selector (mpc_mode, §7)  │        ║  │     rollout (本 stage)   │
+   ║   │   Stage A: constraint_proj    │        ║  │  ③ VLA forward-pass     │
+   ║   │   Stage B: PW single-step     │        ║  │  ④ Critique Synthesizer │
+   ║   │   Stage C: PW CEM/MPPI        │        ║─►│  ⑤ VLM revise (if 违反)  │
+   ║   └───────────────────────────────┘        ║  │  ⑥ 写回 plan + blackboard│
+   ║              ↓                              ║  │                          │
+   ║   Stage A sanity check (always on)         ║  │ Fallback (跟不上):       │
+   ║              ↓                              ║  │  • Stage A only + degraded│
+   ║   robot.execute(a_t*)                      ║  │  • 通知 supervisor       │
+   ║                                            ║  │                          │
+   ║   PointWorld Diagnostic (drift check)      ║  │ 单 stage 精化 ~2–3s     │
+   ╚════════════════════════════════════════════╝  └──────────────────────────┘
                               │ stage complete / anomaly / drift
                               ▼
               ┌───────────────────────────────┐
               │  VLM-Supervisor (L3, §8)       │   旁路, 事件驱动
-              │  + During-Execution Refinement │   ≤ 1 iter, ~1–2s
-              │    (§11.6.5)                   │
+              │  decision:                     │
+              │   continue / advance_stage /   │
+              │   downgrade_mpc_mode /         │
+              │   force_refine_now (→ refiner)/│  紧急通道
+              │   full_replan (→ planner) /    │
+              │   abort                        │
               └───────────────────────────────┘
-                              │
-                              ▼
-              continue / advance_stage / downgrade_mpc_mode /
-              refine / full_replan / abort
 ```
 
-**主线 + gates + 旁路总览**：
-- 主线 A（planning）：VLM-planner → **Pre-Execution Refinement Loop（§11.6）** → Embodiment Grounder（§5.6）
-- **Per-step gate（L2.5，§11.5）**：VLM-Binder + VLM-Refiner + Affordance Grounding，每个 step 进入前解析 `?refs`、读 / 写 Scene Blackboard；可选 PointWorld preview。**默认在 main loop 内**，靠 cache / skip / fallback 不阻塞。
+**主线 + Quick Check + 并行 Refiner + 旁路总览**：
+- 主线 A（planning）：VLM-planner → **Quick Pre-Execution Check（~1–2s, §11.6.2）** → Embodiment Grounder（§5.6）
+- **Per-step gate（L2.5，§11.5）**：每个 step 进入前解析 `?refs`、读 / 写 Scene Blackboard；可选 PointWorld preview。靠 cache / skip / fallback 不阻塞。
 - 主线 B（execution）：VLA → **Hybrid MPC A/B/C（§7）** → robot；Stage B/C 依赖 PointWorld
-- 旁路（supervision，§8）：VLM-supervisor + **During-Execution Refinement（§11.6.5）**，事件驱动，权限战略层（改 plan 结构 / 调 MPC mode / 终止任务）
+- **并行精化（§11.6）**：Streaming Refiner 与 Inner Loop 并行后台运行，永远只精化 lookahead 窗口（默认 1–2 个 stage）内的下一 stage；从 blackboard 读 state，写回 refined plan。**精化不阻塞执行，跟不上时 Stage A 兜底**。
+- 旁路（supervision，§8）：VLM-supervisor 事件驱动，可通过 `force_refine_now` 让 Refiner 紧急优先处理某 stage；或 `full_replan` 回 planner 重生成。
 
 ---
 
@@ -296,15 +282,18 @@ V2 plan format 的 `constraints` 字段（contact / spatial / pose / direction /
 ```json
 {
   "task": "...",
-  "refinement_recommendation": "skip | pointworld_only | full",
-  "_refinement_reason": "Bimanual co-manipulation with hot liquid; high process violation risk"
+  "lookahead": 2,
+  "_lookahead_reason": "Bimanual co-manipulation; refiner needs 2 stages of buffer"
 }
 ```
 
-`refinement_recommendation` 由 VLM 在初始 plan 时输出，控制 Pre-Execution Refinement Loop 的深度：
-- `skip`：单步任务、简单 pick-place，跳过 refinement 节省 30s
-- `pointworld_only`：多步任务、有动力学依赖，但 VLA 训练分布内
-- `full`：contact-rich / 双臂耦合 / 高风险，PointWorld + VLA 双 critic 全开
+`lookahead` 由 VLM 在初始 plan 时输出，控制 Streaming Refiner 提前精化的 stage 数（见 §11.6.4）：
+- `0`：纯反应式，每 stage 临执行才精化（用于简单 pick-place）
+- `1`：默认值，提前 1 个 stage 精化（多数 multi-step 任务）
+- `2`：提前 2 个 stage 精化（contact-rich / 双臂耦合，需更多 buffer）
+- `3`：很少用，仅在 PointWorld 特别可靠且 stage 短的场景
+
+注意：lookahead 越大，**远端 stage 越依赖近端的不可靠 prior**，所以不建议超过 2。
 
 **Per-stage 字段**（针对 MPC 选档）：
 
@@ -924,22 +913,22 @@ SupervisorInput = {
     "occlusion_severe",
     "pointworld_drift_high"
   ],
-  "decision": "continue | advance_stage | refine | full_replan | abort | downgrade_mpc_mode",
+  "decision": "continue | advance_stage | force_refine_now | full_replan | abort | downgrade_mpc_mode",
   "rationale": "VLA pushing cup for 5s, cup center hasn't moved — likely contact failure",
   "replan_hint": "switch from push to pick-and-place",
-  "refine_target_stages": [4, 5]
+  "force_refine_target_stages": [4, 5]
 }
 ```
 
-**5 种 decision 的边界**（升级链）：
+**6 种 decision 的边界**（升级链）：
 1. `continue` → 一切正常
 2. `advance_stage` → 当前 stage termination 已满足
 3. `downgrade_mpc_mode` → PointWorld 在当前 scene 上不可靠（chamfer error 超阈），降回 Stage A（见 §7.6.3）
-4. **`refine`** → 剩余 plan 可救但需调整：触发 **During-Execution Refinement Loop**（§11.6.5），只 revise `refine_target_stages` 标注的部分，N ≤ 1 iteration
-5. `full_replan` → plan 结构已不合理：回到 VLM-Planner 重生成（带 failure context）
+4. **`force_refine_now`** → 检测到某 stage 有问题但 Streaming Refiner 还没轮到，**走紧急通道让 refiner 立即优先处理 `force_refine_target_stages`**（取代原 v2 的 `refine` decision，见 §11.6.7）
+5. `full_replan` → plan 结构已不合理：回到 VLM-Planner 重生成（带 failure context）~5–10s
 6. `abort` → 不可逆失败，停止
 
-`refine` vs `full_replan` 的关键差异：refine 保留 plan 结构、只改具体 stages；full_replan 从零重生成。refine ~1–2s、full_replan ~5–10s——能 refine 就不 full_replan。
+`force_refine_now` vs `full_replan`：前者复用 Streaming Refiner 机制，只精化指定 stage（保留 plan 结构）~2–3s；后者从零重生成 ~5–10s。能 force_refine 就不 full_replan。
 
 ### 8.4 触发条件（事件驱动）
 
@@ -1352,276 +1341,248 @@ t=4  Step 5 place_on_stack/iter_2 进入 L2.5：
 
 ---
 
-## 11.6 Pre-Execution Plan Refinement Loop（三方互馈收敛）
+## 11.6 Streaming Plan Refinement（执行中并行精化）
 
-> 这一节扩展 §11.5 的闭环概念：**在执行开始之前**，VLM 与两个 grounded critic（PointWorld + VLA）进行多轮 critique-revise 迭代，让 plan 在 **物理可行性 + 执行可行性** 两个维度都收敛后再开始执行。这把 v2 框架从"单向 pipeline + runtime catch"演化成"sketch + verify + revise"。
+> 这一节是对早期 v2 "Pre-Execution Refinement Loop"（≤3 iter / ~30s 启动延迟）的**设计反转**。Pre-execution 模式在工程上不可行：
+>
+> 1. **30s 启动延迟**在任何接近实用的场景都不可接受
+> 2. **PointWorld 预测误差随 horizon 指数累积**，全 plan rollout 的远端预测是低质量信号——花 30s 算出来的"远期 stage violation"多半是 PointWorld 在 horizon 5+ 处编的故事
+> 3. **30s 内场景可能已变**，沙盘推演结果到执行时已经过期
+>
+> 修订：精化器在**执行过程中并行运行**，永远只精化"即将执行的下一两个 stage"，维持一个 lookahead 窗口。**计划是个流，不是一个 artifact**。
 
-### 11.6.0 为什么需要这层
+### 11.6.0 为什么 streaming 优于 pre-execution
 
-v2 框架到 §11.5 为止，VLM 出的初始 plan 直接进入 Embodiment Grounder 和执行循环。但 **VLM 在 plan 生成时看不到**：
+| 维度 | Pre-Execution Refinement | **Streaming Refinement** |
+|---|---|---|
+| 启动延迟 | ~30s | **~1–2s** (Quick Check only) |
+| Refinement 调用次数 | 全 plan 多轮 (≤3) | 每 stage 1 轮 (并行) |
+| PointWorld 使用范围 | 全 plan 多步 rollout (含远端不可信预测) | **单 stage rollout（近端，可靠）** |
+| 处理 plan-time 未知场景变化 | ❌ 计算的是开始时的 plan | ✅ 每次精化基于当前 blackboard |
+| 利用执行结果做 prior | ❌ 全在执行前 | ✅ Stage k+1 精化时拿到 stage k 实际结果 |
+| Worst case | "好的 plan 也等了 30s 才动" | "精化跟不上 → degraded mode 但仍能跑" |
+| Compute load | 30s 突发 + 0 | 持续 ~2–3s/stage 后台 |
 
-- **物理动力学**：push 5 步后碗会不会倾倒？倒水时液面是否平稳？
-- **VLA 训练分布覆盖**：某个 affordance 描述是否在 VLA 见过的样本里？置信度高吗？
-- **跨 stage 副作用**：stage 3 的放置会不会挡住 stage 5 的接近路径？
+**核心 insight**：execution 本身就是 world model 的免费 calibration——每 stage 完成后，blackboard 的 ground-truth state 比 PointWorld 5 步预测准 100 倍。Pre-execution 模式放弃了这个免费的信号源。
 
-这些问题在 plan 阶段不解决，就只能在 runtime 通过 L3 supervisor 失败重 plan——开销巨大且经常 cascading failure。**Pre-Execution Refinement** 在执行前用 PointWorld + VLA 做"沙盘推演"，把可预见的问题在 plan 阶段就 fix。
-
-### 11.6.1 三方互馈结构
+### 11.6.1 Streaming 总览
 
 ```text
-                   PointWorld
-                       ↓ 物理可行性反馈
-                       ↓ (predicted trajectory + violation report)
-       ┌─────────────────────────────────────────────┐
-       │           Critique Synthesizer               │
-       │  • root cause analysis                        │
-       │  • structured issues + suggested revisions    │
-       │  • convergence metrics                        │
-       └─────────────────────────────────────────────┘
-                       ↓                  ↑
-                       ↓                  ↑ 执行可行性反馈
-                       ↓                  ↑ (per-stage action entropy)
-                  VLM Planner          VLA
-                  (revise plan)    (forward-pass only)
-                       ↓
-                  revised plan
-                       ↓
-                  (loop until converged or budget exhausted)
+执行时间轴：
+
+t=0 ─Quick Check (1-2s)─→ Stage 1 ───→ Stage 2 ───→ Stage 3 ───→
+                          ===========  ===========  ===========
+                               ↑            ↑            ↑
+                          已被精化       已被精化       已被精化
+                          (Quick Ck)   (during S1)   (during S2)
+
+精化时间轴（与执行并行）：
+
+t=0 ──→ [refine S2(+S3)]   [refine S3(+S4)]   [refine S4(+S5)] ...
+        (during S1)         (during S2)         (during S3)
+        |
+   lookahead=2 时总是提前 1–2 stage 精化
 ```
 
-两个 critic 评估**不同维度**，互补不重复：
-- **PointWorld critic**：评估 plan 在物理世界跑出来会怎样（process 约束 + goal 约束）
-- **VLA critic**：评估 plan 的每个 stage 在 VLA 训练分布里有多熟悉（置信度 / OOD）
+**两条时间轴解耦但同步**：执行只关心当前 stage 是否已精化（或至少 Stage A 兜底）；精化只关心"维持 N 个 stage 的领先量"。
 
-### 11.6.2 Process 约束 vs Goal 约束
+### 11.6.2 Quick Pre-Execution Check（启动）
 
-承接 §3 predicate dictionary：
+为避免 plan 开局就明显错误：
 
-| 类别 | 对应 predicate | PointWorld 评估方式 |
+```python
+def quick_pre_execution_check(plan):
+    """只检查 stage 1 + high-risk stages, ~1-2s instead of 30s"""
+    critical_stages = [plan.steps[0]] + [s for s in plan.steps if s.mpc_mode == "C"]
+    for stage in critical_stages[:3]:   # cap at 3 to bound latency
+        if stage.mpc_mode in ("B", "C"):
+            sim = pointworld.predict_single_step(initial_state, stage.planned_action_0)
+            if catastrophic_violation(sim):
+                return RequestQuickRevise(stage)
+    return GreenLight   # 立即开始执行
+```
+
+代价：1–2s。只 catch 第一步明显错误。**不评估远端**——远端精化交给 streaming refiner。
+
+### 11.6.3 Streaming Refiner（核心机制）
+
+```python
+class StreamingRefiner:
+    def __init__(self, plan, blackboard, lookahead=2):
+        self.plan = plan
+        self.bb = blackboard
+        self.lookahead = lookahead
+        self.refined_until = 0
+
+    def run_background(self):
+        """与 Inner Loop 并行的后台 worker"""
+        while not self.bb.execution_done:
+            current = self.bb.current_stage_idx
+            target = current + self.lookahead
+            while self.refined_until < min(target, len(self.plan.steps) - 1):
+                self._refine_one_stage(self.refined_until + 1)
+                self.refined_until += 1
+            time.sleep(0.05)   # avoid busy loop
+
+    def _refine_one_stage(self, stage_idx):
+        # 从 blackboard 当前状态开始（可能含上一 stage 实际执行结果）
+        start_state = self.bb.snapshot()
+        stage = self.plan.steps[stage_idx]
+
+        # 1. PointWorld rollout (1–2s)
+        pw_result = pointworld.rollout_single_stage(start_state, stage)
+        # 2. VLA forward-pass (0.5s)，仅 lookahead>=2 时启用
+        vla_result = vla.evaluate_stage(start_state, stage) if self.lookahead >= 2 else None
+
+        # 3. Critique
+        critique = critique_synthesizer.synthesize(pw_result, vla_result)
+        if critique.has_significant_issues():
+            # 4. VLM revise (0.5s)
+            revised = vlm.revise_stage(stage, critique)
+            self.plan.steps[stage_idx] = revised
+
+        self.bb.mark_refined(stage_idx)
+```
+
+**单 stage 精化总成本**：~2–3s（PointWorld 1–2s + VLA 0.5s + VLM revise 0.5s）。Stage 平均执行时长 2–10s → **通常能跟上**。
+
+### 11.6.4 Lookahead 窗口大小
+
+按 mpc_mode 自适应：
+
+| mpc_mode | 默认 lookahead | 原因 |
 |---|---|---|
-| **Process 约束** | per-step `constraints` 中 role=safety / role=progress；以及 `temporal_constraints` | rollout 的**每一步**做 `predicate.cost_on_pointcloud()` → 累计 violation score |
-| **Goal 约束** | plan top-level `goal` predicates；以及每个 step 的 `termination` predicates | rollout **终态**做 goal predicate evaluate → satisfied / 距 satisfied 还差多少 |
+| A (简单) | 0 | 不需要预精化，Stage A 单步可控 |
+| B (接触) | 1 | 接触动力学需要单 stage 前瞻 |
+| C (contact-rich) | 2 | 多体耦合需要更长前瞻 |
 
-**两类必须同时满足**——只满足 process（VLA 全程小心走路）但不满足 goal（任务没完成）等于失败。**收敛判据严格 AND**。
+VLM-Planner 可在 plan 顶层覆盖：`lookahead: 1` 或 `lookahead: 3`。
 
-### 11.6.3 Critique 格式
+### 11.6.5 精化跟不上时的 Fallback
 
-Critic 输出必须结构化、可定位、可执行：
+```python
+def get_stage_for_execution(stage_idx):
+    if refiner.is_refined(stage_idx):
+        return plan.steps[stage_idx]                    # 1. 最优路径
+    elif quick_check_ok(plan.steps[stage_idx]):
+        log.warn(f"stage {stage_idx} not refined; degraded mode")
+        notify_supervisor_degraded()
+        return plan.steps[stage_idx]                    # 2. 原 VLM 版 + Stage A 兜底
+    else:
+        return abort_or_request_supervisor()            # 3. 兜底失败
+```
+
+**设计纪律**：精化是 **best-effort enhancement**，不是 **execution prerequisite**。即使精化完全没跑，系统也能用 Stage A 兜底跑——只是性能差。
+
+### 11.6.6 Critic 与 Critique 格式（修订）
+
+PointWorld + VLA + Critique Synthesizer 的角色不变。区别是：
+
+- **过去**：critics 评估全 plan（多步累计 cost），critique 跨多 stage
+- **现在**：critics 评估单 stage（从 blackboard 起点），critique 局限于该 stage
+
+Critique 格式简化为单 stage 粒度：
 
 ```json
 {
-  "iteration": 1,
-  "verdict": "needs_revision",
-  "global_summary": "Plan reaches goal with probability 0.62. 2 process violations detected. 1 stage has low VLA confidence.",
-
+  "stage_idx": 5,
+  "stage_name": "grasp_pot_handle",
   "issues": [
     {
-      "stage_idx": 3,
-      "stage_name": "place_on_stack",
       "issue_type": "predicted_constraint_violation",
-      "violated_predicate": {"pred": "upright", "args": ["bowl_1"]},
-      "violation_severity": 0.7,
-      "evidence": "PointWorld rollout predicts bowl_1 tilts 25° during placement (threshold 15°). Root cause: transport stage didn't pre-align bowl orientation.",
-      "suggested_revision_dimension": "modify_transport_stage_orientation"
-    },
-    {
-      "stage_idx": 5,
-      "stage_name": "grasp_pot_handle",
-      "issue_type": "low_vla_confidence",
-      "metric": {"vla_action_entropy": 2.8, "threshold": 1.5},
-      "evidence": "VLA policy is high-entropy over this action; likely scene-OOD or ambiguous affordance description.",
-      "suggested_revision_dimension": "refine_affordance_region_text"
-    },
-    {
-      "issue_type": "goal_unreachable",
-      "evidence": "Goal predicate `on(bowl_3, bowl_1)` predicted unsatisfied because plan only places 2 bowls. Missing stage.",
-      "suggested_revision_dimension": "add_stage"
+      "violated_predicate": {"pred": "upright", "args": ["pot"]},
+      "violation_severity": 0.6,
+      "evidence": "PointWorld predicts pot tilts 22° at h=3",
+      "suggested_revision_dimension": "lower_approach_velocity"
     }
   ],
-
-  "convergence_metrics": {
-    "process_violation_score": 1.2,
-    "goal_satisfaction_prob": 0.62,
-    "min_vla_confidence": 0.32,
-    "all_satisfied_threshold": {"process": 0.3, "goal": 0.8, "vla_conf": 0.5}
-  },
-
-  "budget_remaining": 2
+  "decision": "needs_revise | accept",
+  "convergence_check": "single_pass"
 }
 ```
 
-**`suggested_revision_dimension` 的设计意图**：critic 对 VLM 做**方向性**引导，不是具体改写。VLM 自己决定 "how"，critic 只告诉"where + why"。
+注意不再有 `iteration` 字段、`budget_remaining` 字段——每 stage 单轮精化，不迭代。
 
-### 11.6.4 Convergence Criteria 与 Budget
+### 11.6.7 与 L3 Supervisor 的分工
 
-```python
-def converged(critique):
-    cm = critique.convergence_metrics
-    return (cm.process_violation_score < cm.thresholds.process
-            and cm.goal_satisfaction_prob > cm.thresholds.goal
-            and cm.min_vla_confidence > cm.thresholds.vla_conf)
-
-def refine_loop(initial_plan, max_iters=3):
-    plan = initial_plan
-    history = []
-    for iter in range(max_iters):
-        # 双 critic 并行评估
-        pw_result = pointworld.simulate_plan(plan)     # ~5–10s
-        vla_result = vla.evaluate_plan(plan)            # ~1–2s
-        critique = synthesize(pw_result, vla_result)
-        history.append((plan, critique))
-        if converged(critique):
-            return plan, "converged", history
-        plan = vlm.revise(plan, critique)               # ~500ms
-    # Budget 耗尽：选迭代过程中"最优"plan
-    best = min(history, key=lambda x: refinement_score(x[1]))
-    return best[0], "budget_exhausted", history
+```
+Supervisor (L3)            Streaming Refiner
+  ↑                          ↑
+事件驱动                     持续后台 (per stage)
+  ↑                          ↑
+异常 / drift / timeout       PointWorld + VLA + revise
+  ↑                          ↑
+- continue                   正常: 静默更新 plan
+- advance_stage              跟不上: 报告 degraded
+- downgrade_mpc_mode         
+- force_refine_now ──────────────┐
+- full_replan                    │ 紧急通道
+- abort                          │
+                                 ▼
+                          Refiner 立即优先处理某 stage
+                          (跳过 lookahead 队列)
 ```
 
-**预算**：
-- **Pre-execution**：`max_iters=3`，总时长 < 30s
-- **During-execution（§11.6.5）**：`max_iters=1`，~1–2s
+**`force_refine_now`** 是 supervisor 与 refiner 之间的紧急通道——supervisor 检测到某 stage 有问题但 refiner 还没轮到，强制提前精化。这取代了原 v2 的 `refine` decision。
 
-### 11.6.5 跳过策略（性价比管理）
+### 11.6.8 训练数据缺口
 
-Refinement 不免费——30s pre-execution 延迟对简单任务是浪费。VLM 在初始 plan 输出 `refinement_recommendation`（见 §4.3.1）：
+VLM 需要学会**消费单 stage critique**。需要 1k–5k 条 (task + per-stage critique → revised stage) 数据对。
 
-| recommendation | 含义 | 场景 |
+| 改造项 | 方法 | 成本 |
 |---|---|---|
-| `skip` | 跳过 refinement，直接执行 | 单步任务、简单 pick-place、无 contact-rich dynamics |
-| `pointworld_only` | 只跑 PointWorld critic，不跑 VLA critic | 多步任务、动力学依赖，但 VLA 训练分布内 |
-| `full` | PointWorld + VLA 双 critic 全开 | contact-rich / 双臂耦合 / 高风险（端锅、倒水）|
-
-**三档按需消耗** refinement budget，简单任务 0 延迟。
-
-### 11.6.6 During-Execution Refinement（轻量版）
-
-每个 stage 完成时（或 L3 supervisor 触发时），跑一次单轮 refinement：
-
-```python
-def during_execution_refine(remaining_plan, current_scene, history):
-    pw_result = pointworld.simulate_plan(remaining_plan, scene=current_scene)  # ~2s
-    # VLA critic 可选；多数 case 跳过省时间
-    critique = synthesize(pw_result, vla_result=None)
-    if converged(critique):
-        return remaining_plan, "no_change"
-    revised = vlm.revise(remaining_plan, critique, target_stages=critique.affected_stages)
-    return revised, "refined"
-```
-
-**与 L3 supervisor 的关系**：
-- supervisor 的 `decision: "refine"`（§8.3）触发本机制
-- supervisor 的 `decision: "full_replan"` 跳过本机制，回 VLM-Planner 从零重生成
-- supervisor 用 `refine_target_stages` 字段指定 refine 范围
-
-### 11.6.7 VLA-as-Critic 的实现
-
-VLA 不只是执行器，也是 **executability critic**。问题：让 VLA 评估而不执行？
-
-**方式 A：Forward-pass-only**
-- 喂给 VLA "当前 scene + plan stage 描述"，让它出 action distribution
-- **不执行**，只看 distribution 的 entropy / 最大概率
-- 高 entropy = 不知道做什么 = 低置信
-- 单 stage 评估 ~50ms
-- **第一版用 A**
-
-**方式 B：VLA + sim rollout**
-- 让 VLA 在 sim（用 PointWorld 当 sim）里跑完一遍 stage
-- 看是否触发约束违反
-- 单 stage 评估 ~500ms–1s
-- 更准但贵，留给后续
-
-**Calibration 问题**：现成 VLA（OpenVLA / π0）的 confidence 校准很差，单 forward pass 的 entropy 噪声大。Mitigation：
-- (a) Fine-tune VLA 加个 confidence head
-- (b) 用 ensemble VLA 做 disagreement-based uncertainty
-- (c) 第一版 supervisor 不依赖 VLA confidence 作为 hard gate，只作 soft signal
-
-### 11.6.8 Critique Synthesizer（翻译层）
-
-Critic raw output → 文本 critique 这一步丢失信息。Synthesizer 是 IP 集中地——必须做**根因分析**而非现象报告：
-
-```python
-class CritiqueSynthesizer:
-    def synthesize(self, pw_result, vla_result):
-        issues = []
-
-        # Process violations
-        for violation in pw_result.violations:
-            issue = {
-                "stage_idx": self._trace_to_originating_stage(violation, pw_result.trajectory),
-                "issue_type": "predicted_constraint_violation",
-                "violated_predicate": violation.predicate,
-                "violation_severity": violation.severity,
-                "evidence": self._explain_root_cause(violation, pw_result.trajectory),
-                "suggested_revision_dimension": self._suggest_revision(violation),
-            }
-            issues.append(issue)
-
-        # Goal unreachability
-        if not pw_result.goal_satisfied:
-            issues.append({
-                "issue_type": "goal_unreachable",
-                "evidence": self._diff_predicted_vs_goal(pw_result.final_state, pw_result.goal),
-                "suggested_revision_dimension": self._suggest_for_goal(pw_result),
-            })
-
-        # VLA low confidence
-        if vla_result:
-            for stage_idx, entropy in enumerate(vla_result.entropies):
-                if entropy > VLA_ENTROPY_THRESHOLD:
-                    issues.append({...})
-
-        return Critique(issues=issues, metrics=self._compute_metrics(...))
-```
-
-**根因分析**的关键是**反向溯源 trajectory**：violation 是在哪个时刻发生的？那个时刻的 action 由 plan 的哪个 stage 决定？为什么那个 stage 的 constraints 没 catch？
+| 单 stage 级别的 critique-revise 对 | sim + PointWorld 自动生成 violation → gpt-5-mini 写 revised stage | 1–2 周，半自动 |
+| 训练目标 | 在现有 V2 LoRA 基础上加 single-stage critique-revise 任务 | 与 VLM revise 训练合并 |
 
 ### 11.6.9 风险与 Mitigation
 
 | 风险 | Mitigation |
 |---|---|
-| **Mode collapse** —— VLM 退化到 VLA "舒适区"，舍 goal 求 process | Convergence 必须包含 goal_satisfaction_prob；critique weighting：goal 不满足 > process 违反 > VLA 低置信 |
-| **Critic 系统性错误**（PointWorld OOD / VLA 校准差） → VLM 被误导 | PointWorld 先做 OOD score，高 OOD 时 critic 报 `low_critic_confidence`；VLM 看到此标记**减少改动**而非大改 |
-| **Critique information bottleneck**（VLM 不知道改哪 stage） | Synthesizer 做根因分析；明确 `suggested_revision_dimension` |
-| **Runaway iteration**（3 次都不收敛、振荡）| 检测 oscillation（plan 在两状态间反复跳）→ early stop；检测 diminishing returns → early stop；始终保留 initial plan 作为兜底 |
-| **Pre-execution latency 把简单任务拖死** | `refinement_recommendation: skip` 跳过 |
+| **精化跟不上**（短 stage / 慢 PointWorld）| §11.6.5 fallback；Stage A only 执行 + supervisor 通知 |
+| **远端 stage 强依赖近端结果** | lookahead 不超过 2，避免基于太早的 prior 精化太远 |
+| **PointWorld 在某 scene 上不可靠** | refiner 自己检测 OOD（高 chamfer）→ 跳过该 stage 精化 + Stage A only |
+| **Refiner worker 卡死** | 单 stage 精化 timeout（默认 5s）→ 跳过，标记 degraded |
+| **Plan 大幅变化（loop / 不定长任务）** | Deferred refs 在 L2.5 解析时绑定，refiner 同步消费新 stage |
+| **执行流推进太快**（grasp 闭合 ~1s）| 短 stage 不触发 refine（lookahead 算下来不需要），自然安全 |
 
 ### 11.6.10 实现路径
 
 | Phase | 交付 | 时间 |
 |---|---|---|
 | P1 | PointWorld 集成 + Stage B/C MPC（§7）跑通 | 4–6 周 |
-| P2 | Critique Synthesizer v1：PointWorld violation → 结构化 critique | 2 周 |
-| P3 | VLM revise prompt + LoRA tune（让 VLM 学会消费 critique） | 2 周（含数据生成）|
-| P4 | Pre-execution refinement pilot：3 个 task 验证收敛性 | 2 周 |
-| P5 | VLA-as-critic 加入 | 2 周 |
-| P6 | During-execution refinement 集成到 L3 supervisor | 2 周 |
+| P2 | Critique Synthesizer v1（**单 stage 粒度**，不是全 plan）| 2 周 |
+| P3 | StreamingRefiner background worker + Quick Pre-Execution Check | 2 周 |
+| P4 | VLM revise prompt + LoRA tune（**single-stage critique 消费**）| 2 周 |
+| P5 | Fallback 机制 + supervisor `force_refine_now` 联动 | 1 周 |
+| P6 | 端到端 benchmark：streaming vs pre-execution vs no-refinement vs L3-only | 3 周 |
 
-总计 ~3–4 个月。Critical path：P1（PointWorld 必须先工作）→ P2（critique 质量决定 refinement 上限）。
+总计 ~3.5 个月。**Critical path**：P1 → P3（refiner 必须先在 mock VLM 上跑通，验证 lookahead 维持率）。
 
-### 11.6.11 训练数据缺口
+### 11.6.11 Paper claim 的变化
 
-VLM 需要被训练"会消费 critique"——现有 V2 plan 数据全是 "任务 → plan" 对，**没有 "任务 + 失败 critique → revised plan" 对**。
+**修订前**：plan-critique-revise loop converges in ≤3 iterations on process + goal.
 
-| 改造项 | 方法 | 成本 |
-|---|---|---|
-| 收集 (task + critique → revised plan) 数据 | 用 sim + PointWorld 自动生成 violation → 让 gpt-5-mini 写 revised plan | 1–2 周，半自动 |
-| 数据量目标 | 1k–5k 条 critique-revise pair | — |
-| 训练目标 | 在现有 V2 LoRA 基础上加 critique-revise 任务，多任务 fine-tune | 与 P3 合并 |
+**修订后**：
 
-这是 P3 的隐藏成本，必须提前规划。
+> **Streaming refinement maintains a bounded lookahead window of refined plan stages with end-to-end startup latency ≤ 2s (vs ~30s for batch pre-execution refinement), while preserving constraint satisfaction guarantees via Stage A always-on safety net. Refinement-keeps-up rate > X% on tasks with average stage duration > 3s.**
 
-### 11.6.12 与 L3 Supervisor 的分工总结
+**Ablation**（4 档）：
 
-| 维度 | L3 Supervisor | Pre-Execution Refinement | During-Execution Refinement |
-|---|---|---|---|
-| 触发时机 | 执行中事件驱动 | 执行**前**一次性 | L3 触发 (decision=refine) |
-| Critic | 当前 scene + 历史 N step | PointWorld + VLA 双 critic | PointWorld（VLA 可选）|
-| Iteration budget | N/A（单次决策）| ≤ 3 | ≤ 1 |
-| 修改范围 | 任意决策（continue/refine/full_replan/abort）| 整个 plan 任意 stage | 仅 `refine_target_stages` |
-| 单次开销 | 200–500ms | 7–12s × ≤3 iter | ~1–2s |
+1. Streaming refinement (proposed)
+2. Pre-execution batch refinement (~30s startup)
+3. No refinement (Stage A only)
+4. L3 supervisor only (event-driven, no streaming)
 
-**升级链**：Pre-execution refinement < During-execution refinement < Full replan < Abort
+**预期**：streaming > pre-execution > L3-only > no refinement，在动态场景上差距最大。
+
+### 11.6.12 设计纪律新增
+
+承接前面五条设计纪律（D1–D5）：
+
+- **D6（新）：精化与执行并行**——精化永远在后台，不阻塞 main loop
+- **D7（新）：永不依赖 PointWorld 远期预测**——lookahead ≤ 2 stage 是硬上限
+- **D8（新）：Stage A 始终兜底**——任何精化路径失败，Stage A 都能让系统跑下去（degraded 但不崩）
+
 
 ---
 
@@ -1711,11 +1672,15 @@ VLM 需要被训练"会消费 critique"——现有 V2 plan 数据全是 "任务
 14. **PointWorld 训练数据**：DROID 单臂 + Aloha 双臂 + sim 数据够吗？双臂 PointWorld 是否退回 Stage A 兜底直到数据充足？这影响 Stage C 在端锅 / 倒水类双臂任务上的可行性，是 P1 phase 的关键风险。
 15. **Critique Synthesizer 的根因分析能力**：单纯 violation 报告 vs trajectory backtrace，质量差距多大？是否需要专门训练一个 RCA 模型，还是用 GPT-like LLM 做翻译就够？
 16. **VLA confidence 校准**：现成 VLA（OpenVLA / π0）entropy 噪声大，是否值得为 critic 用途专门 fine-tune confidence head？或用 ensemble disagreement 做 uncertainty？
-17. **Pre-execution refinement vs L2.5 重叠边界**：两者都可消费 PointWorld 预测——划分原则是"plan-level (refinement) vs step-level (L2.5)"，但 PointWorld preview query 究竟在哪一层评估更经济？
+17. **Streaming Refiner vs L2.5 重叠边界**：两者都消费 PointWorld 预测——划分原则是 "stage-level lookahead (refiner) vs step-level (L2.5)"。Refiner 写 plan，L2.5 读 plan + 解析 refs。但 PointWorld preview query 在哪一层评估更经济？需要 ablation。
 18. **Mode collapse 检测**：refinement loop 反复改 plan 让 VLA 高置信但 goal 不满足时，convergence_metrics 的 weighting（goal > process > VLA_conf）是否足够防御？需要 ablation 验证。
 19. **PointWorld + VLA 数据共生失败模式**：如果两者训在同一数据集，会不会共享盲区？需要 ablation 用不同数据子集训各自模型，对比 catch rate。
 20. **Mesh hash 校验机制**：Grounder 和 PointWorld 共享 URDF/mesh，部署时如何强制校验？哪一方负责 invalidate？
-21. **VLM 学会消费 critique 的训练数据**：1k–5k 条 (task + critique → revised plan) pair 从哪来？sim 自动生成 vs 人工标注的成本/质量比？
+21. **VLM 学会消费 critique 的训练数据**：1k–5k 条 (task + **single-stage** critique → revised stage) pair 从哪来？sim 自动生成 vs 人工标注的成本/质量比？
+22. **Streaming Refiner 的 refinement-keeps-up rate 阈值**：跟不上时降级到 Stage A only —— 多少比例的 stage 走 fallback 是可接受的？> 20% 时应该自动降低 lookahead 或换 mpc_mode 吗？
+23. **Lookahead vs stage 耦合度**：lookahead=2 时 stage k+2 的精化基于 stage k+1 的精化版本（而非 actual execution result）。stage 间强耦合任务（如 stack）这种 prior 误差有多大？
+24. **`force_refine_now` 与正常 lookahead 队列的优先级冲突**：supervisor 紧急通道触发时，refiner 正在精化别的 stage —— 是 preempt 还是 queue？preempt 会丢已做的工作，queue 会延迟紧急修复。
+25. **短 stage 的精化策略**：grasp 闭合可能 < 1s，refiner 来不及做。是否在 plan 阶段就让 VLM 合并这种短 stage，或直接标记 lookahead=0 让它走 Stage A only？
 
 ---
 
@@ -1740,27 +1705,27 @@ v2 框架的核心简化和强化：
   - 新增 L2.5 Semantic Resolver（runtime VLM 持续参与，靠 cache/skip/fallback 不阻塞）
   - 新增 Binder 函数集合（项目第二窄腰）
   - **新增 Hybrid MPC A/B/C with PointWorld**（§7，lazy evaluation of expensive predictions；复活 v1 砍掉的 Predictive Shielding paper claim）
-  - **新增 Pre-Execution Refinement Loop**（§11.6，VLM + PointWorld + VLA 三方互馈，≤ 3 iter 收敛）
-  - **新增 Critique Synthesizer**（§11.6.8，根因分析翻译层，PointWorld violations → 结构化 critique）
-  - **新增 During-Execution Refinement**（§11.6.5，supervisor decision=refine 触发，~1–2s 轻量版）
+  - **新增 Streaming Plan Refinement**（§11.6，执行中并行精化 · Quick Check ~1–2s 启动 + 后台 Refiner 维护 lookahead 窗口）
+  - **新增 Critique Synthesizer**（§11.6.6，根因分析翻译层，**单 stage 粒度** PointWorld violations → 结构化 critique）
+  - **新增 supervisor `force_refine_now` 紧急通道**（§11.6.7，取代 v2 早期的 `refine` decision）
 
 研究 claim 收紧：
   - P1: VLM-trained affordance region + LangSAM > zero-shot keypoint
   - P2 (完整版): **Hybrid MPC (A+B+C) + PointWorld + VLM-derived predicate cost** 在 contact-rich 任务（端锅 / 倒水 / 推堆叠物）上 > constraint projector only / PointWorld+task reward only / plain VLA
-  - P3 (新): **三方互馈 refinement loop** 在 ≤ 3 iter 内收敛到满足 process + goal + VLA executability 的 plan
+  - **P3 (修订)**: **Streaming refinement** 维持 lookahead 窗口，startup latency ≤ 2s（vs ~30s for batch pre-execution refinement），refinement-keeps-up rate > X% on tasks with stage duration > 3s
   - P4: 留作 future work（VLA + PointWorld mental sim, Dreamer-style）
 
-L2.5 + Refinement 引入后的可证伪 claim：
+L2.5 + Streaming Refinement 引入后的可证伪 claim：
   - 在散落 / 长尾任务上，L2.5 (VLM-primary binder) > rule-only binder
   - L2.5 的 cache + skip + fallback 让 VLM-in-loop 平均开销 < 300ms/step
-  - Pre-Execution Refinement 减少 runtime cascading failure 率 > X%（vs 单向 pipeline baseline）
+  - **Streaming refinement > pre-execution batch refinement > L3-only > no refinement**（4 档 ablation，dynamic scene 上差距最大）
   - Mode-adaptive MPC (A/B/C) 在简单任务上延迟 ≈ Stage A only，在复杂任务上成功率 ≈ Stage C always-on
 ```
 
 **最核心的设计纪律**：
 
-> 五层 stack + 两个 gates（pre-execution refinement + per-step L2.5）+ 一条旁路 supervisor（L3 + during-execution refinement）；**四个** frequency band；**两份**冻结字典（predicate dict + binder set）；一份共享的 Scene Blackboard；一份共享的 URDF/mesh assets（Grounder 与 PointWorld 共用）。
+> 五层 stack + Quick Check (~1–2s) + per-step L2.5 + **并行 Streaming Refiner** + 旁路 L3 Supervisor；**四个** frequency band；**两份**冻结字典（predicate dict + binder set）；一份共享的 Scene Blackboard；一份共享的 URDF/mesh assets（Grounder 与 PointWorld 共用）。
 >
-> VLM 不知道身体；MPC 三档共存（不强制预测未来）；Supervisor 不修改动作；L2.5 不修改 plan 结构；Pre-Execution Refinement 不在执行中触发；VLA 不验证安全。
+> VLM 不知道身体；MPC 三档共存（不强制预测未来）；Supervisor 不修改动作；L2.5 不修改 plan 结构；Streaming Refiner 不阻塞 main loop；VLA 不验证安全。
 >
-> 每个模块只做自己擅长的事；VLM 的 world knowledge 在 **plan 阶段（refinement）+ runtime（L2.5）+ critic 阶段（supervisor）** 三个时机经济地参与，而不是阻塞或缺席。**lazy evaluation of expensive predictions** 是贯穿 MPC 三档选档、L2.5 cache/skip/fallback、refinement budget 三处的统一设计哲学。
+> 每个模块只做自己擅长的事；VLM 的 world knowledge 在 **plan 阶段 + runtime（L2.5）+ 并行精化（Refiner）+ 异常监督（L3）** 四个时机经济地参与，而不是阻塞或缺席。**Lazy evaluation of expensive predictions** + **执行与精化并行** + **Stage A 始终兜底**——是贯穿 MPC 三档选档、L2.5 cache/skip/fallback、Streaming Refiner lookahead/fallback 的统一设计哲学。

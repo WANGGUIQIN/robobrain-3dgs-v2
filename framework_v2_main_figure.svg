@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 2480" width="1600" height="2480">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1800 2100" width="1800" height="2100">
 <style>
 text { font-family: 'Noto Sans CJK SC','PingFang SC','Microsoft YaHei','Hiragino Sans GB','SimHei','WenQuanYi Zen Hei',sans-serif; fill: #212121; }
 .ti { font-size: 30px; font-weight: bold; }
@@ -20,194 +20,195 @@ text { font-family: 'Noto Sans CJK SC','PingFang SC','Microsoft YaHei','Hiragino
 <marker id="ar_sup" markerWidth="12" markerHeight="12" refX="11" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,8 L11,4 z" fill="#B71C1C"/></marker>
 <filter id="sh" x="-5%" y="-5%" width="115%" height="115%"><feDropShadow dx="2" dy="3" stdDeviation="2.5" flood-opacity="0.18"/></filter>
 </defs>
-<rect x="0" y="0" width="1600" height="2480" fill="#FFFFFF"/>
-<text x="800" y="50" class="ti" text-anchor="middle">VLM-VLA-MPC 机器人操作框架 (v2)</text>
-<text x="800" y="80" class="sub" text-anchor="middle">五层 Stack + 两道 Gate + 一条旁路 · 两份冻结字典 (predicate dict + binder set) · Lazy evaluation of expensive predictions</text>
-<rect x="660" y="115" width="280" height="50" rx="25" ry="25" fill="#ECEFF1" stroke="#37474F" stroke-width="2" filter="url(#sh)"/>
-<text x="800" y="146" class="bh" text-anchor="middle">用户指令 (自然语言任务描述)</text>
-<line x1="800" y1="165" x2="800" y2="200" stroke="#333" stroke-width="2.2" marker-end="url(#ar)"/>
-<rect x="70" y="215" width="1460" height="120" rx="10" ry="10" fill="#E3F2FD" stroke="#1565C0" stroke-width="2" filter="url(#sh)"/>
-<text x="800" y="243" class="sh" text-anchor="middle">VLM-Planner (RoboBrain LoRA · embodiment-agnostic · §4)</text>
+<rect x="0" y="0" width="1800" height="2100" fill="#FFFFFF"/>
+<text x="900" y="50" class="ti" text-anchor="middle">VLM-VLA-MPC 机器人操作框架 (v2 · streaming refinement)</text>
+<text x="900" y="80" class="sub" text-anchor="middle">执行与精化并行 · 启动延迟 ≤ 2s · Quick Check + Streaming Refiner + Stage A 兜底 · Lazy evaluation of expensive predictions</text>
+<rect x="760" y="115" width="280" height="50" rx="25" ry="25" fill="#ECEFF1" stroke="#37474F" stroke-width="2" filter="url(#sh)"/>
+<text x="900" y="146" class="bh" text-anchor="middle">用户指令 (自然语言任务描述)</text>
+<line x1="900" y1="165" x2="900" y2="200" stroke="#333" stroke-width="2.2" marker-end="url(#ar)"/>
+<rect x="70" y="215" width="1660" height="120" rx="10" ry="10" fill="#E3F2FD" stroke="#1565C0" stroke-width="2" filter="url(#sh)"/>
+<text x="900" y="243" class="sh" text-anchor="middle">VLM-Planner (RoboBrain LoRA · embodiment-agnostic · §4)</text>
 <text x="100" y="267" class="bl" text-anchor="start">• 输出 plan v0：&lt;think&gt;推理 + Goal predicate + Scene 描述</text>
 <text x="100" y="285" class="bl" text-anchor="start">• 每个 stage：?deferred refs + binders + constraints (来自 predicate dictionary)</text>
 <text x="100" y="303" class="bl" text-anchor="start">• MPC 选档：mpc_mode hint (A/B/C) + pointworld_focus_objects</text>
-<text x="100" y="321" class="bl" text-anchor="start">• 顶层：refinement_recommendation (skip / pointworld_only / full)</text>
-<text x="1550" y="275" class="ft" text-anchor="start">L0 (plan 阶段, 单次)</text>
-<line x1="800" y1="335" x2="800" y2="370" stroke="#333" stroke-width="2.2" marker-end="url(#ar)"/>
-<text x="860" y="357" class="lb" text-anchor="start">plan v0</text>
-<rect x="70" y="370" width="1460" height="500" rx="10" ry="10" fill="#F3E5F5" stroke="#6A1B9A" stroke-width="2.5" filter="url(#sh)"/>
-<text x="800" y="400" class="sh" text-anchor="middle">执行前 Refinement Loop (§11.6) — VLM × PointWorld × VLA 三方互馈</text>
-<text x="800" y="423" class="sub" text-anchor="middle">N ≤ 3 iterations · ≤ 30s budget · 收敛判据 (process + goal + VLA conf) 严格 AND</text>
-<rect x="150" y="455" width="540" height="145" rx="8" ry="8" fill="#fff" stroke="#6A1B9A" stroke-width="1.5"/>
-<text x="420" y="481" class="bh" text-anchor="middle">PointWorld Critic (物理可行性)</text>
-<text x="170" y="505" class="bl" text-anchor="start">• 全 plan H-step rollout → predicted trajectory</text>
-<text x="170" y="523" class="bl" text-anchor="start">• Process 违反：rollout 每步做 predicate.cost_on_pointcloud</text>
-<text x="170" y="541" class="bl" text-anchor="start">• Goal 满足度：rollout 终态 vs goal predicate</text>
-<text x="170" y="559" class="bl" text-anchor="start">• 输出 violation report + goal_satisfaction_prob</text>
-<text x="170" y="577" class="bl" text-anchor="start">• OOD 标记：高 chamfer 误差时降低 critic 置信</text>
-<rect x="910" y="455" width="540" height="145" rx="8" ry="8" fill="#fff" stroke="#6A1B9A" stroke-width="1.5"/>
-<text x="1180" y="481" class="bh" text-anchor="middle">VLA Critic (执行可行性)</text>
-<text x="930" y="505" class="bl" text-anchor="start">• Forward-pass only：仅前向推理，不执行</text>
-<text x="930" y="523" class="bl" text-anchor="start">• 每个 stage：action distribution entropy</text>
-<text x="930" y="541" class="bl" text-anchor="start">• 高 entropy → 训练分布外 / 低置信</text>
-<text x="930" y="559" class="bl" text-anchor="start">• Calibration：ensemble disagreement (可选)</text>
-<text x="930" y="577" class="bl" text-anchor="start">• 第一版 soft signal，不做 hard gating</text>
-<line x1="420" y1="600" x2="600" y2="635" stroke="#6A1B9A" stroke-width="2" marker-end="url(#ar)"/>
-<line x1="1180" y1="600" x2="1000" y2="635" stroke="#6A1B9A" stroke-width="2" marker-end="url(#ar)"/>
-<rect x="350" y="635" width="900" height="75" rx="8" ry="8" fill="#fff" stroke="#6A1B9A" stroke-width="1.5"/>
-<text x="800" y="663" class="bh" text-anchor="middle">Critique Synthesizer (§11.6.8) · 根因分析翻译层</text>
-<text x="800" y="687" class="bl" text-anchor="middle">结构化 critique = [issue (stage_idx, predicate, severity, evidence)] + suggested_revision_dimension + convergence_metrics</text>
-<line x1="800" y1="710" x2="800" y2="738" stroke="#6A1B9A" stroke-width="2" marker-end="url(#ar)"/>
-<rect x="500" y="738" width="600" height="65" rx="32" ry="32" fill="#fff" stroke="#6A1B9A" stroke-width="1.5"/>
-<text x="800" y="766" class="bh" text-anchor="middle">收敛？(process 违反 ≤ θ_p AND goal ≥ θ_g AND VLA conf ≥ θ_v)</text>
-<text x="800" y="788" class="bl" text-anchor="middle">或 budget 耗尽 (max_iters=3)</text>
-<path d="M 1100 770 L 1545 770 L 1545 360 L 1535 360" stroke="#6A1B9A" stroke-width="2" fill="none" marker-end="url(#ar_ref)" stroke-dasharray="6 4"/>
-<text x="1555" y="762" class="lb" text-anchor="start">no → VLM revise</text>
-<text x="1555" y="780" class="lb" text-anchor="start">(plan, critique)</text>
-<text x="160" y="856" class="ant" text-anchor="start">refinement_recommendation 跳过策略: skip (简单任务) · pointworld_only (中等) · full (高风险/双臂)</text>
-<line x1="800" y1="803" x2="800" y2="905" stroke="#6A1B9A" stroke-width="2.5" marker-end="url(#ar)"/>
-<text x="860" y="828" class="lb" text-anchor="start">yes / budget done → refined plan</text>
-<rect x="70" y="920" width="1460" height="170" rx="10" ry="10" fill="#E8F5E9" stroke="#2E7D32" stroke-width="2" filter="url(#sh)"/>
-<text x="800" y="950" class="sh" text-anchor="middle">Embodiment Grounder (§5.6) — 经典 robotics, 无 learning</text>
-<text x="800" y="973" class="sub" text-anchor="middle">把 embodiment-agnostic plan 翻译成 embodiment-grounded plan: arm assignment + handover + co-manipulation 检测</text>
-<rect x="100" y="995" width="272" height="85" rx="6" ry="6" fill="#fff" stroke="#2E7D32" stroke-width="1.5"/>
-<text x="236" y="1017" class="bh" text-anchor="middle">cuRobo IK</text>
-<text x="236" y="1037" class="bs" text-anchor="middle">GPU batched IK</text>
-<text x="236" y="1052" class="bs" text-anchor="middle">+ SDF collision</text>
-<text x="236" y="1067" class="bs" text-anchor="middle">1–5 ms</text>
-<rect x="382" y="995" width="272" height="85" rx="6" ry="6" fill="#fff" stroke="#2E7D32" stroke-width="1.5"/>
-<text x="518" y="1017" class="bh" text-anchor="middle">WorkspaceMap</text>
-<text x="518" y="1037" class="bs" text-anchor="middle">离线预计算</text>
-<text x="518" y="1052" class="bs" text-anchor="middle">voxel 可达性</text>
-<text x="518" y="1067" class="bs" text-anchor="middle">~1μs lookup</text>
-<rect x="664" y="995" width="272" height="85" rx="6" ry="6" fill="#fff" stroke="#2E7D32" stroke-width="1.5"/>
-<text x="800" y="1017" class="bh" text-anchor="middle">ArmAssigner</text>
-<text x="800" y="1037" class="bs" text-anchor="middle">启发式打分</text>
-<text x="800" y="1052" class="bs" text-anchor="middle">(manip/dist/idle)</text>
-<text x="800" y="1067" class="bs" text-anchor="middle">+ L2.5 fallback</text>
-<rect x="946" y="995" width="272" height="85" rx="6" ry="6" fill="#fff" stroke="#2E7D32" stroke-width="1.5"/>
-<text x="1082" y="1017" class="bh" text-anchor="middle">HandoverPlanner</text>
-<text x="1082" y="1037" class="bs" text-anchor="middle">模板化 sub-plan</text>
-<text x="1082" y="1052" class="bs" text-anchor="middle">时序约束注入</text>
-<text x="1082" y="1067" class="bs" text-anchor="middle">before/simultaneous</text>
-<rect x="1228" y="995" width="272" height="85" rx="6" ry="6" fill="#fff" stroke="#2E7D32" stroke-width="1.5"/>
-<text x="1364" y="1017" class="bh" text-anchor="middle">CoManip Detector</text>
-<text x="1364" y="1037" class="bs" text-anchor="middle">contact_spec 规则</text>
-<text x="1364" y="1052" class="bs" text-anchor="middle">触发双臂耦合</text>
-<text x="1364" y="1067" class="bs" text-anchor="middle">约束模式</text>
-<text x="1550" y="1005" class="ft" text-anchor="start">L0 (plan 阶段)</text>
-<line x1="800" y1="1090" x2="800" y2="1125" stroke="#333" stroke-width="2.2" marker-end="url(#ar)"/>
-<text x="860" y="1112" class="lb" text-anchor="start">embodiment-grounded plan (?refs 未解析)</text>
-<rect x="70" y="1140" width="1460" height="220" rx="10" ry="10" fill="#FFF3E0" stroke="#E65100" stroke-width="2" filter="url(#sh)"/>
-<text x="800" y="1170" class="sh" text-anchor="middle">L2.5 语义解析层 (§11.5) — 每个 step 入口/退出</text>
-<text x="800" y="1193" class="sub" text-anchor="middle">VLM 在 runtime 持续贡献 world knowledge，但靠 cache/skip/fallback 不阻塞 main loop</text>
-<rect x="100" y="1215" width="453" height="120" rx="6" ry="6" fill="#fff" stroke="#E65100" stroke-width="1.5"/>
-<text x="326" y="1237" class="bh" text-anchor="middle">VLM-Binder + VLM-Refiner</text>
-<text x="115" y="1260" class="bl" text-anchor="start">• vlm_semantic_query 解析 ?refs</text>
-<text x="115" y="1276" class="bl" text-anchor="start">• runtime_constraint_query 加约束</text>
-<text x="115" y="1292" class="bl" text-anchor="start">• affordance_refinement_query</text>
-<text x="115" y="1308" class="bl" text-anchor="start">• PointWorld preview query (可选)</text>
-<rect x="573" y="1215" width="453" height="120" rx="6" ry="6" fill="#fff" stroke="#E65100" stroke-width="1.5"/>
-<text x="799" y="1237" class="bh" text-anchor="middle">Scene Blackboard</text>
-<text x="588" y="1260" class="bl" text-anchor="start">• 唯一权威 binding 表</text>
-<text x="588" y="1276" class="bl" text-anchor="start">• object states (perception 维护)</text>
-<text x="588" y="1292" class="bl" text-anchor="start">• execution history</text>
-<text x="588" y="1308" class="bl" text-anchor="start">• 所有模块共享, 单一 source of truth</text>
-<rect x="1046" y="1215" width="453" height="120" rx="6" ry="6" fill="#fff" stroke="#E65100" stroke-width="1.5"/>
-<text x="1272" y="1237" class="bh" text-anchor="middle">Affordance Grounding</text>
-<text x="1061" y="1260" class="bl" text-anchor="start">• LangSAM (text → mask)</text>
-<text x="1061" y="1276" class="bl" text-anchor="start">• depth lift (mask → 3D point)</text>
-<text x="1061" y="1292" class="bl" text-anchor="start">• 简化: 删除 v1 八级 filter</text>
-<text x="1061" y="1308" class="bl" text-anchor="start">• RGB-D 数据原生支持</text>
-<text x="800" y="1346" class="ant" text-anchor="middle">L2.5 Controller: cache (query_hash, scene_hash) + budget ~500ms/step + skip_if_scene_unchanged + fallback rule</text>
-<text x="1550" y="1250" class="ft" text-anchor="start">L2.5
+<text x="100" y="321" class="bl" text-anchor="start">• 顶层：lookahead (0/1/2/3) — 控制 Streaming Refiner 提前精化的 stage 数</text>
+<text x="1750" y="275" class="ft" text-anchor="start">L0 plan 阶段
+单次</text>
+<line x1="900" y1="335" x2="900" y2="370" stroke="#333" stroke-width="2.2" marker-end="url(#ar)"/>
+<text x="960" y="357" class="lb" text-anchor="start">plan v0</text>
+<rect x="70" y="370" width="1660" height="110" rx="10" ry="10" fill="#FFF8E1" stroke="#FF8F00" stroke-width="2" filter="url(#sh)"/>
+<text x="900" y="398" class="sh" text-anchor="middle">Quick Pre-Execution Check (§11.6.1) · 启动延迟 ≤ 2s</text>
+<text x="900" y="421" class="sub" text-anchor="middle">只检查 stage 1 + plan 中 mpc_mode=C 的 high-risk stage · PointWorld 单步预测确认无 catastrophic violation</text>
+<text x="100" y="446" class="bl" text-anchor="start">• 跳过远端 stage 评估 (PointWorld 误差随 horizon 累积，远端预测不可信)</text>
+<text x="100" y="463" class="bl" text-anchor="start">• 通过 → 立即开始执行；不通过 → 单轮 VLM revise stage 1 后再开 (~3s 总延迟)</text>
+<text x="1750" y="425" class="ft" text-anchor="start">~1–2s
+单次</text>
+<line x1="900" y1="480" x2="900" y2="510" stroke="#333" stroke-width="2.2" marker-end="url(#ar)"/>
+<rect x="70" y="510" width="1660" height="170" rx="10" ry="10" fill="#E8F5E9" stroke="#2E7D32" stroke-width="2" filter="url(#sh)"/>
+<text x="900" y="540" class="sh" text-anchor="middle">Embodiment Grounder (§5.6) — 经典 robotics, 无 learning</text>
+<text x="900" y="563" class="sub" text-anchor="middle">把 embodiment-agnostic plan 翻译成 embodiment-grounded plan: arm assignment + handover + co-manipulation 检测</text>
+<rect x="100" y="585" width="312" height="85" rx="6" ry="6" fill="#fff" stroke="#2E7D32" stroke-width="1.5"/>
+<text x="256" y="607" class="bh" text-anchor="middle">cuRobo IK</text>
+<text x="256" y="627" class="bs" text-anchor="middle">GPU batched IK</text>
+<text x="256" y="642" class="bs" text-anchor="middle">+ SDF collision</text>
+<text x="256" y="657" class="bs" text-anchor="middle">1–5 ms</text>
+<rect x="422" y="585" width="312" height="85" rx="6" ry="6" fill="#fff" stroke="#2E7D32" stroke-width="1.5"/>
+<text x="578" y="607" class="bh" text-anchor="middle">WorkspaceMap</text>
+<text x="578" y="627" class="bs" text-anchor="middle">离线预计算</text>
+<text x="578" y="642" class="bs" text-anchor="middle">voxel 可达性</text>
+<text x="578" y="657" class="bs" text-anchor="middle">~1μs lookup</text>
+<rect x="744" y="585" width="312" height="85" rx="6" ry="6" fill="#fff" stroke="#2E7D32" stroke-width="1.5"/>
+<text x="900" y="607" class="bh" text-anchor="middle">ArmAssigner</text>
+<text x="900" y="627" class="bs" text-anchor="middle">启发式打分</text>
+<text x="900" y="642" class="bs" text-anchor="middle">(manip/dist/idle)</text>
+<text x="900" y="657" class="bs" text-anchor="middle">+ L2.5 fallback</text>
+<rect x="1066" y="585" width="312" height="85" rx="6" ry="6" fill="#fff" stroke="#2E7D32" stroke-width="1.5"/>
+<text x="1222" y="607" class="bh" text-anchor="middle">HandoverPlanner</text>
+<text x="1222" y="627" class="bs" text-anchor="middle">模板化 sub-plan</text>
+<text x="1222" y="642" class="bs" text-anchor="middle">时序约束注入</text>
+<text x="1222" y="657" class="bs" text-anchor="middle">before/simultaneous</text>
+<rect x="1388" y="585" width="312" height="85" rx="6" ry="6" fill="#fff" stroke="#2E7D32" stroke-width="1.5"/>
+<text x="1544" y="607" class="bh" text-anchor="middle">CoManip Detector</text>
+<text x="1544" y="627" class="bs" text-anchor="middle">contact_spec 规则</text>
+<text x="1544" y="642" class="bs" text-anchor="middle">触发双臂耦合</text>
+<text x="1544" y="657" class="bs" text-anchor="middle">约束模式</text>
+<text x="1750" y="595" class="ft" text-anchor="start">L0 plan 阶段</text>
+<line x1="900" y1="680" x2="900" y2="715" stroke="#333" stroke-width="2.2" marker-end="url(#ar)"/>
+<text x="960" y="702" class="lb" text-anchor="start">embodiment-grounded plan (?refs 未解析)</text>
+<rect x="70" y="720" width="1660" height="220" rx="10" ry="10" fill="#FFF3E0" stroke="#E65100" stroke-width="2" filter="url(#sh)"/>
+<text x="900" y="750" class="sh" text-anchor="middle">L2.5 语义解析层 (§11.5) — 每个 step 入口/退出</text>
+<text x="900" y="773" class="sub" text-anchor="middle">VLM 在 runtime 持续贡献 world knowledge，但靠 cache/skip/fallback 不阻塞 main loop</text>
+<rect x="100" y="795" width="520" height="120" rx="6" ry="6" fill="#fff" stroke="#E65100" stroke-width="1.5"/>
+<text x="360" y="817" class="bh" text-anchor="middle">VLM-Binder + VLM-Refiner</text>
+<text x="115" y="840" class="bl" text-anchor="start">• vlm_semantic_query 解析 ?refs</text>
+<text x="115" y="856" class="bl" text-anchor="start">• runtime_constraint_query 加约束</text>
+<text x="115" y="872" class="bl" text-anchor="start">• affordance_refinement_query</text>
+<text x="115" y="888" class="bl" text-anchor="start">• PointWorld preview query (可选)</text>
+<rect x="640" y="795" width="520" height="120" rx="6" ry="6" fill="#fff" stroke="#E65100" stroke-width="1.5"/>
+<text x="900" y="817" class="bh" text-anchor="middle">Scene Blackboard</text>
+<text x="655" y="840" class="bl" text-anchor="start">• 唯一权威 binding 表</text>
+<text x="655" y="856" class="bl" text-anchor="start">• object states (perception 维护)</text>
+<text x="655" y="872" class="bl" text-anchor="start">• execution history</text>
+<text x="655" y="888" class="bl" text-anchor="start">• 所有模块共享, single source of truth</text>
+<rect x="1180" y="795" width="520" height="120" rx="6" ry="6" fill="#fff" stroke="#E65100" stroke-width="1.5"/>
+<text x="1440" y="817" class="bh" text-anchor="middle">Affordance Grounding</text>
+<text x="1195" y="840" class="bl" text-anchor="start">• LangSAM (text → mask)</text>
+<text x="1195" y="856" class="bl" text-anchor="start">• depth lift (mask → 3D point)</text>
+<text x="1195" y="872" class="bl" text-anchor="start">• 简化: 删除 v1 八级 filter</text>
+<text x="1195" y="888" class="bl" text-anchor="start">• RGB-D 数据原生支持</text>
+<text x="900" y="926" class="ant" text-anchor="middle">L2.5 Controller: cache (query_hash, scene_hash) + budget ~500ms/step + skip_if_scene_unchanged + fallback rule</text>
+<text x="1750" y="830" class="ft" text-anchor="start">L2.5
 0.5–2 Hz</text>
-<line x1="800" y1="1360" x2="800" y2="1395" stroke="#333" stroke-width="2.2" marker-end="url(#ar)"/>
-<text x="860" y="1382" class="lb" text-anchor="start">resolved step (concrete targets + constraints)</text>
-<rect x="70" y="1410" width="1460" height="540" rx="10" ry="10" fill="#FFFDE7" stroke="#F9A825" stroke-width="2" filter="url(#sh)"/>
-<text x="800" y="1440" class="sh" text-anchor="middle">Inner Loop (L1 反应 + L2 战术, §7) — 10–30 Hz (Stage C 时降至 2–5 Hz)</text>
-<rect x="100" y="1475" width="220" height="50" rx="6" ry="6" fill="#fff" stroke="#F9A825" stroke-width="1.5"/>
-<text x="210" y="1497" class="bh" text-anchor="middle">Perception</text>
-<text x="210" y="1515" class="bs" text-anchor="middle">obs_t (RGB-D) → point_cloud_t</text>
-<line x1="320" y1="1500" x2="350" y2="1500" stroke="#333" stroke-width="2.2" marker-end="url(#ar)"/>
-<rect x="350" y="1475" width="230" height="50" rx="6" ry="6" fill="#fff" stroke="#F9A825" stroke-width="1.5"/>
-<text x="465" y="1497" class="bh" text-anchor="middle">VLA (动作执行器)</text>
-<text x="465" y="1515" class="bs" text-anchor="middle">point_cloud + plan → a_t</text>
-<line x1="580" y1="1500" x2="610" y2="1500" stroke="#333" stroke-width="2.2" marker-end="url(#ar)"/>
-<text x="598" y="1490" class="lb" text-anchor="middle">a_t</text>
-<rect x="620" y="1470" width="880" height="240" rx="8" ry="8" fill="#fff" stroke="#F9A825" stroke-width="2"/>
-<text x="1060" y="1494" class="bh" text-anchor="middle">MPC Selector (§7) · 按 stage 的 mpc_mode 选档</text>
-<rect x="635" y="1520" width="276" height="175" rx="6" ry="6" fill="#FFF59D" stroke="#F9A825" stroke-width="2"/>
-<text x="773" y="1542" class="bh" text-anchor="middle">Stage A</text>
-<text x="773" y="1560" class="bl" text-anchor="middle">约束投影 (默认)</text>
-<text x="773" y="1582" class="bs" text-anchor="middle">kinematic_forward</text>
-<text x="773" y="1598" class="bs" text-anchor="middle">FK + rigid attach</text>
-<text x="773" y="1614" class="bs" text-anchor="middle">确定性, 无学习</text>
-<text x="773" y="1681" class="lat" text-anchor="middle">&lt; 5 ms</text>
-<rect x="916" y="1520" width="276" height="175" rx="6" ry="6" fill="#FFCC80" stroke="#EF6C00" stroke-width="2"/>
-<text x="1054" y="1542" class="bh" text-anchor="middle">Stage B</text>
-<text x="1054" y="1560" class="bl" text-anchor="middle">PointWorld 单步</text>
-<text x="1054" y="1582" class="bs" text-anchor="middle">接触瞬间 / 关键事件</text>
-<text x="1054" y="1598" class="bs" text-anchor="middle">pc_t → pc_{t+1}</text>
-<text x="1054" y="1614" class="bs" text-anchor="middle">single-step pred</text>
-<text x="1054" y="1681" class="lat" text-anchor="middle">30–80 ms</text>
-<rect x="1197" y="1520" width="276" height="175" rx="6" ry="6" fill="#FFAB91" stroke="#D84315" stroke-width="2"/>
-<text x="1335" y="1542" class="bh" text-anchor="middle">Stage C</text>
-<text x="1335" y="1560" class="bl" text-anchor="middle">PointWorld CEM/MPPI</text>
-<text x="1335" y="1582" class="bs" text-anchor="middle">contact-rich / 双臂耦合</text>
-<text x="1335" y="1598" class="bs" text-anchor="middle">H-step rollout × K 候选</text>
-<text x="1335" y="1614" class="bs" text-anchor="middle">累计 predicate cost</text>
-<text x="1335" y="1681" class="lat" text-anchor="middle">200–500 ms</text>
-<line x1="1060" y1="1710" x2="1060" y2="1740" stroke="#333" stroke-width="2.5" marker-end="url(#ar)"/>
-<text x="1080" y="1728" class="lb" text-anchor="start">a_t*</text>
-<rect x="130" y="1740" width="1340" height="50" rx="6" ry="6" fill="#FFF9C4" stroke="#F9A825" stroke-width="1.5"/>
-<text x="800" y="1772" class="bh" text-anchor="middle">Stage A sanity check (always on · 兜底) · 几何 collision + IK + workspace 再过一遍</text>
-<line x1="800" y1="1790" x2="800" y2="1815" stroke="#333" stroke-width="2.2" marker-end="url(#ar)"/>
-<rect x="550" y="1815" width="500" height="50" rx="25" ry="25" fill="#ECEFF1" stroke="#37474F" stroke-width="1.5"/>
-<text x="800" y="1846" class="bh" text-anchor="middle">robot.execute(a_t*)</text>
-<rect x="100" y="1725" width="290" height="110" rx="6" ry="6" fill="#FFEBEE" stroke="#B71C1C" stroke-width="1.5"/>
-<text x="245" y="1747" class="bh" text-anchor="middle">PointWorld Diagnostic</text>
-<text x="115" y="1767" class="bs" text-anchor="start">• 每 N step 比对：</text>
-<text x="115" y="1781" class="bs" text-anchor="start">  predicted_pc vs observed_pc</text>
-<text x="115" y="1795" class="bs" text-anchor="start">• chamfer 误差 > θ → </text>
-<text x="115" y="1809" class="bs" text-anchor="start">  通知 Supervisor 降档</text>
-<text x="115" y="1823" class="bs" text-anchor="start">• OOD 自动 fallback Stage A</text>
-<text x="1550" y="1680" class="ft" text-anchor="start">L1 + L2
-10–30 Hz</text>
-<line x1="800" y1="1950" x2="800" y2="1990" stroke="#333" stroke-width="2.5" marker-end="url(#ar)"/>
-<text x="850" y="1975" class="lb" text-anchor="start">stage complete / anomaly / PointWorld drift</text>
-<rect x="70" y="2010" width="1460" height="200" rx="10" ry="10" fill="#FFEBEE" stroke="#B71C1C" stroke-width="2.5" filter="url(#sh)"/>
-<text x="800" y="2040" class="sh" text-anchor="middle">VLM-Supervisor (L3, §8) + During-Execution Refinement (§11.6.5) · 旁路 · 事件驱动</text>
-<text x="800" y="2063" class="sub" text-anchor="middle">权限战略层: 不修改单步动作, 不解析单个 binding · 只改 plan 结构或触发 refinement</text>
-<rect x="110" y="2090" width="450" height="50" rx="5" ry="5" fill="#fff" stroke="#B71C1C" stroke-width="1.5"/>
-<text x="335" y="2108" class="bh" text-anchor="middle">continue</text>
-<text x="335" y="2125" class="bs" text-anchor="middle">继续当前 stage</text>
-<rect x="575" y="2090" width="450" height="50" rx="5" ry="5" fill="#fff" stroke="#B71C1C" stroke-width="1.5"/>
-<text x="800" y="2108" class="bh" text-anchor="middle">advance_stage</text>
-<text x="800" y="2125" class="bs" text-anchor="middle">推进下一 stage</text>
-<rect x="1040" y="2090" width="450" height="50" rx="5" ry="5" fill="#fff" stroke="#B71C1C" stroke-width="1.5"/>
-<text x="1265" y="2108" class="bh" text-anchor="middle">downgrade_mpc_mode</text>
-<text x="1265" y="2125" class="bs" text-anchor="middle">降档 MPC</text>
-<text x="1265" y="2138" class="bs" text-anchor="middle">(PointWorld 不可靠)</text>
-<rect x="110" y="2148" width="450" height="50" rx="5" ry="5" fill="#fff" stroke="#B71C1C" stroke-width="1.5"/>
-<text x="335" y="2166" class="bh" text-anchor="middle">refine</text>
-<text x="335" y="2183" class="bs" text-anchor="middle">During-Exec Refinement</text>
-<text x="335" y="2196" class="bs" text-anchor="middle">(≤1 iter, ~1–2s)</text>
-<rect x="575" y="2148" width="450" height="50" rx="5" ry="5" fill="#fff" stroke="#B71C1C" stroke-width="1.5"/>
-<text x="800" y="2166" class="bh" text-anchor="middle">full_replan</text>
-<text x="800" y="2183" class="bs" text-anchor="middle">回 VLM-Planner</text>
-<text x="800" y="2196" class="bs" text-anchor="middle">重生成 (带 failure ctx)</text>
-<rect x="1040" y="2148" width="450" height="50" rx="5" ry="5" fill="#fff" stroke="#B71C1C" stroke-width="1.5"/>
-<text x="1265" y="2166" class="bh" text-anchor="middle">abort</text>
-<text x="1265" y="2183" class="bs" text-anchor="middle">终止任务</text>
-<text x="1265" y="2196" class="bs" text-anchor="middle">(不可逆失败)</text>
-<text x="1550" y="2110" class="ft" text-anchor="start">L3
+<line x1="900" y1="940" x2="900" y2="975" stroke="#333" stroke-width="2.2" marker-end="url(#ar)"/>
+<text x="960" y="962" class="lb" text-anchor="start">resolved step (concrete targets + constraints)</text>
+<rect x="70" y="990" width="1000" height="580" rx="10" ry="10" fill="#FFFDE7" stroke="#F9A825" stroke-width="2" filter="url(#sh)"/>
+<text x="570" y="1020" class="sh" text-anchor="middle">Inner Loop (L1 反应 + L2 战术 · §7) · 10–30 Hz</text>
+<text x="570" y="1043" class="sub" text-anchor="middle">执行主路径 · Stage A always-on 作为单步安全兜底</text>
+<rect x="380" y="1070" width="380" height="50" rx="6" ry="6" fill="#fff" stroke="#F9A825" stroke-width="1.5"/>
+<text x="570" y="1092" class="bh" text-anchor="middle">Perception</text>
+<text x="570" y="1110" class="bs" text-anchor="middle">obs_t (RGB-D) → point_cloud_t</text>
+<line x1="570" y1="1120" x2="570" y2="1145" stroke="#333" stroke-width="2.2" marker-end="url(#ar)"/>
+<text x="630" y="1135" class="lb" text-anchor="start">pc_t</text>
+<rect x="380" y="1145" width="380" height="50" rx="6" ry="6" fill="#fff" stroke="#F9A825" stroke-width="1.5"/>
+<text x="570" y="1167" class="bh" text-anchor="middle">VLA (动作执行器)</text>
+<text x="570" y="1185" class="bs" text-anchor="middle">pc + plan + kpts → a_t</text>
+<line x1="570" y1="1195" x2="570" y2="1225" stroke="#333" stroke-width="2.2" marker-end="url(#ar)"/>
+<text x="630" y="1215" class="lb" text-anchor="start">a_t</text>
+<rect x="100" y="1225" width="940" height="200" rx="8" ry="8" fill="#fff" stroke="#F9A825" stroke-width="2"/>
+<text x="570" y="1249" class="bh" text-anchor="middle">MPC Selector (§7) · 按 stage 的 mpc_mode 选档</text>
+<rect x="110" y="1275" width="306" height="135" rx="6" ry="6" fill="#FFF59D" stroke="#F9A825" stroke-width="2"/>
+<text x="263" y="1297" class="bh" text-anchor="middle">Stage A</text>
+<text x="263" y="1315" class="bl" text-anchor="middle">约束投影</text>
+<text x="263" y="1331" class="bs" text-anchor="middle">(默认)</text>
+<text x="263" y="1353" class="bs" text-anchor="middle">FK + rigid attach</text>
+<text x="263" y="1369" class="bs" text-anchor="middle">确定性</text>
+<text x="263" y="1396" class="lat" text-anchor="middle">&lt; 5 ms</text>
+<rect x="421" y="1275" width="306" height="135" rx="6" ry="6" fill="#FFCC80" stroke="#EF6C00" stroke-width="2"/>
+<text x="574" y="1297" class="bh" text-anchor="middle">Stage B</text>
+<text x="574" y="1315" class="bl" text-anchor="middle">PointWorld 单步</text>
+<text x="574" y="1331" class="bs" text-anchor="middle">(接触)</text>
+<text x="574" y="1353" class="bs" text-anchor="middle">pc_t → pc_{t+1}</text>
+<text x="574" y="1369" class="bs" text-anchor="middle">single-step pred</text>
+<text x="574" y="1396" class="lat" text-anchor="middle">30–80 ms</text>
+<rect x="732" y="1275" width="306" height="135" rx="6" ry="6" fill="#FFAB91" stroke="#D84315" stroke-width="2"/>
+<text x="885" y="1297" class="bh" text-anchor="middle">Stage C</text>
+<text x="885" y="1315" class="bl" text-anchor="middle">PW CEM/MPPI</text>
+<text x="885" y="1331" class="bs" text-anchor="middle">(contact-rich)</text>
+<text x="885" y="1353" class="bs" text-anchor="middle">H-step × K rollout</text>
+<text x="885" y="1369" class="bs" text-anchor="middle">累计 cost</text>
+<text x="885" y="1396" class="lat" text-anchor="middle">200–500 ms</text>
+<line x1="570" y1="1425" x2="570" y2="1450" stroke="#333" stroke-width="2.5" marker-end="url(#ar)"/>
+<text x="590" y="1440" class="lb" text-anchor="start">a_t*</text>
+<rect x="120" y="1450" width="900" height="38" rx="6" ry="6" fill="#FFF9C4" stroke="#F9A825" stroke-width="1.5"/>
+<text x="570" y="1475" class="bh" text-anchor="middle">Stage A sanity check (always on · 几何/IK/collision 兜底)</text>
+<line x1="570" y1="1488" x2="570" y2="1506" stroke="#333" stroke-width="2.5" marker-end="url(#ar)"/>
+<rect x="370" y="1506" width="400" height="40" rx="20" ry="20" fill="#ECEFF1" stroke="#37474F" stroke-width="1.5"/>
+<text x="570" y="1532" class="bh" text-anchor="middle">robot.execute(a_t*)</text>
+<text x="100" y="1556" class="ft" text-anchor="start">L1 + L2 · 10–30 Hz</text>
+<rect x="1090" y="990" width="640" height="580" rx="10" ry="10" fill="#F3E5F5" stroke="#6A1B9A" stroke-width="2.5" filter="url(#sh)"/>
+<text x="1410" y="1020" class="sh" text-anchor="middle">Streaming Refiner (§11.6)</text>
+<text x="1410" y="1043" class="sub" text-anchor="middle">与执行并行 · 后台维护 lookahead 窗口</text>
+<rect x="1110" y="1070" width="600" height="230" rx="8" ry="8" fill="#fff" stroke="#6A1B9A" stroke-width="1.5"/>
+<text x="1410" y="1095" class="bh" text-anchor="middle">对未来 lookahead 个 stage：</text>
+<text x="1130" y="1125" class="bl" text-anchor="start">① 从 Scene Blackboard 读当前状态</text>
+<text x="1130" y="1149" class="bl" text-anchor="start">② PointWorld H-step rollout (本 stage)</text>
+<text x="1130" y="1173" class="bl" text-anchor="start">③ VLA forward-pass 评 confidence</text>
+<text x="1130" y="1197" class="bl" text-anchor="start">④ Critique Synthesizer 根因分析</text>
+<text x="1130" y="1221" class="bl" text-anchor="start">⑤ 如违反 → VLM revise 这一 stage</text>
+<text x="1130" y="1245" class="bl" text-anchor="start">⑥ 写回 plan + blackboard，标记 refined</text>
+<text x="1410" y="1282" class="ant" text-anchor="middle">单 stage 精化 ~2–3s · Stage 平均执行 2–10s</text>
+<rect x="1110" y="1315" width="600" height="60" rx="6" ry="6" fill="#FFF8E1" stroke="#6A1B9A" stroke-width="1.5"/>
+<text x="1410" y="1337" class="bh" text-anchor="middle">Lookahead window (默认 = mpc_mode):</text>
+<text x="1410" y="1357" class="bl" text-anchor="middle">Stage A → lookahead=0   Stage B → 1   Stage C → 2</text>
+<rect x="1110" y="1390" width="600" height="80" rx="6" ry="6" fill="#FFEBEE" stroke="#B71C1C" stroke-width="1.5"/>
+<text x="1410" y="1412" class="bh" text-anchor="middle">精化跟不上 → Fallback:</text>
+<text x="1130" y="1432" class="bl" text-anchor="start">• Stage A only 执行未精化 stage</text>
+<text x="1130" y="1450" class="bl" text-anchor="start">• 标记 degraded mode, 通知 L3 supervisor</text>
+<path d="M 1090 1090 L 1075 1090" stroke="#6A1B9A" stroke-width="2" fill="none" marker-end="url(#ar_ref)" stroke-dasharray="6 4"/>
+<text x="1080" y="1084" class="lb" text-anchor="middle">读 state</text>
+<path d="M 1090 1240 L 1065 1240" stroke="#6A1B9A" stroke-width="2" fill="none" marker-end="url(#ar_ref)" stroke-dasharray="6 4"/>
+<text x="1080" y="1234" class="lb" text-anchor="middle">写 refined
+stage k+1</text>
+<text x="1710" y="1556" class="ft" text-anchor="end">与 Inner Loop 并行</text>
+<rect x="770" y="1554" width="280" height="60" rx="6" ry="6" fill="#FFEBEE" stroke="#B71C1C" stroke-width="1.5"/>
+<text x="910" y="1574" class="bh" text-anchor="middle">PointWorld Diagnostic</text>
+<text x="910" y="1592" class="bs" text-anchor="middle">每 N step 比对 predicted vs observed</text>
+<text x="910" y="1606" class="bs" text-anchor="middle">chamfer > θ → 通知 Supervisor 降档</text>
+<line x1="570" y1="1570" x2="570" y2="1610" stroke="#333" stroke-width="2.5" marker-end="url(#ar)"/>
+<text x="620" y="1595" class="lb" text-anchor="start">stage 完成 / 异常 / drift</text>
+<rect x="70" y="1610" width="1660" height="210" rx="10" ry="10" fill="#FFEBEE" stroke="#B71C1C" stroke-width="2.5" filter="url(#sh)"/>
+<text x="900" y="1640" class="sh" text-anchor="middle">VLM-Supervisor (L3, §8) · 旁路 · 事件驱动</text>
+<text x="900" y="1663" class="sub" text-anchor="middle">战略层异常检测 · 不修改单步动作 · 不解析单个 binding · 只改 plan 结构或终止任务</text>
+<rect x="120" y="1690" width="503" height="56" rx="5" ry="5" fill="#fff" stroke="#B71C1C" stroke-width="1.5"/>
+<text x="371" y="1712" class="bh" text-anchor="middle">continue</text>
+<text x="371" y="1730" class="bs" text-anchor="middle">继续当前 stage</text>
+<rect x="648" y="1690" width="503" height="56" rx="5" ry="5" fill="#fff" stroke="#B71C1C" stroke-width="1.5"/>
+<text x="899" y="1712" class="bh" text-anchor="middle">advance_stage</text>
+<text x="899" y="1730" class="bs" text-anchor="middle">推进下一 stage</text>
+<rect x="1176" y="1690" width="503" height="56" rx="5" ry="5" fill="#fff" stroke="#B71C1C" stroke-width="1.5"/>
+<text x="1427" y="1712" class="bh" text-anchor="middle">downgrade_mpc_mode</text>
+<text x="1427" y="1730" class="bs" text-anchor="middle">MPC 降档</text>
+<text x="1427" y="1743" class="bs" text-anchor="middle">(PointWorld 不可靠)</text>
+<rect x="120" y="1754" width="503" height="56" rx="5" ry="5" fill="#fff" stroke="#B71C1C" stroke-width="1.5"/>
+<text x="371" y="1776" class="bh" text-anchor="middle">force_refine_now</text>
+<text x="371" y="1794" class="bs" text-anchor="middle">强制 Streaming Refiner</text>
+<text x="371" y="1807" class="bs" text-anchor="middle">立即处理某 stage</text>
+<rect x="648" y="1754" width="503" height="56" rx="5" ry="5" fill="#fff" stroke="#B71C1C" stroke-width="1.5"/>
+<text x="899" y="1776" class="bh" text-anchor="middle">full_replan</text>
+<text x="899" y="1794" class="bs" text-anchor="middle">回 VLM-Planner</text>
+<text x="899" y="1807" class="bs" text-anchor="middle">重生成 (带 failure ctx)</text>
+<rect x="1176" y="1754" width="503" height="56" rx="5" ry="5" fill="#fff" stroke="#B71C1C" stroke-width="1.5"/>
+<text x="1427" y="1776" class="bh" text-anchor="middle">abort</text>
+<text x="1427" y="1794" class="bs" text-anchor="middle">终止任务</text>
+<text x="1427" y="1807" class="bs" text-anchor="middle">(不可逆失败)</text>
+<text x="1750" y="1715" class="ft" text-anchor="start">L3
 事件驱动
 0.2–1 Hz</text>
-<path d="M 1500 2010 L 1580 2010 L 1580 240 L 1535 240" stroke="#B71C1C" stroke-width="2" fill="none" marker-end="url(#ar_sup)" stroke-dasharray="6 4"/>
-<text x="1590" y="1125" class="lb" text-anchor="start">refine / full_replan</text>
-<text x="1590" y="1143" class="lb" text-anchor="start">反馈到上游</text>
-<rect x="70" y="2240" width="1460" height="70" rx="8" ry="8" fill="#FAFAFA" stroke="#666" stroke-width="1"/>
-<text x="800" y="2265" class="bh" text-anchor="middle">设计纪律 · Five Disciplines</text>
-<text x="800" y="2288" class="ant" text-anchor="middle">D1 Constraint contract not action script · D2 Outcome-based supervision · D3 VLM embodiment-agnostic · D4 Predicate dict 窄腰 · D5 频率分层 (L1 反应 / L2 战术 / L2.5 语义 / L3 战略)</text>
+<path d="M 1700 1610 L 1780 1610 L 1780 240 L 1735 240" stroke="#B71C1C" stroke-width="2" fill="none" marker-end="url(#ar_sup)" stroke-dasharray="6 4"/>
+<text x="1790" y="925" class="lb" text-anchor="start">full_replan / force_refine</text>
+<text x="1790" y="943" class="lb" text-anchor="start">反馈到上游</text>
+<rect x="70" y="1845" width="1660" height="80" rx="8" ry="8" fill="#FAFAFA" stroke="#666" stroke-width="1"/>
+<text x="900" y="1870" class="bh" text-anchor="middle">设计纪律 · Five Disciplines + Streaming Refinement 原则</text>
+<text x="900" y="1893" class="ant" text-anchor="middle">D1 Constraint contract not action script · D2 Outcome-based supervision · D3 VLM embodiment-agnostic · D4 Predicate dict 窄腰 · D5 频率分层</text>
+<text x="900" y="1913" class="ant" text-anchor="middle">+ 精化与执行并行 · Stage A 始终兜底 · 永不阻塞 main loop · 永不依赖 PointWorld 远期预测</text>
 </svg>
