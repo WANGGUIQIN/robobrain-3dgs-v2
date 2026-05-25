@@ -27,6 +27,7 @@
 | MPC 限定为 constraint projector（无 forward dynamics） | **Hybrid MPC（Stage A/B/C with PointWorld）**：A = constraint projector（默认）；B = PointWorld 单步预测（接触瞬间 / 关键事件）；C = PointWorld CEM/MPPI 多步优化（contact-rich / 双臂耦合）。Mode 由 VLM plan 的 `mpc_mode` hint 或 L2.5 动态选择 | 单纯 constraint projector 看不到 H 步后的延迟违反（"推 5 步后碗会倾倒"）；PointWorld always-on 又太贵——按任务复杂度三档 **lazy evaluation of expensive predictions** |
 | 单向 pipeline：VLM → 执行；失败再 replan | **Streaming Plan Refinement（§11.6，执行中并行精化）**：启动只做 ~1–2s Quick Pre-Execution Check；精化器后台并行，永远只精化 lookahead 窗口内的下一两个 stage；每 stage 单轮 critique-revise；Stage A 始终兜底 | 早期 v2 的 pre-execution 模式启动 ~30s 不可接受，且 PointWorld 远端预测累积误差大；streaming 把精化与执行解耦，startup ≤ 2s，远端 stage 总是在执行前才被精化（避免依赖不可信的远期预测）|
 | Embodiment Grounder "启发式 + IK"（未指定栈） | **5 子组件具体栈**：cuRobo（首推）做 IK + collision；WorkspaceMap 预计算 voxel reachability（μs lookup）；ArmAssigner 启发式打分 + L2.5 VLM fallback；HandoverPlanner 模板化；CoManipulationDetector 规则触发 | 含糊技术选型导致工程不可估时；cuRobo 与 PointWorld **共享 GPU + URDF + mesh**，infra 复用避免双套维护 |
+| Predicate 含数值参数（`dist_lt(A, B, 0.05)`, `above_plane(A, plane, 0.02)` 等）；VLM 同时承担"语义判断 + 数值阈值给定"；plan 含 `mpc_horizon`/`max_force` 等 numeric 字段 | **Symbolic VLM Contract（§3.5 + §4.5，架构第 3 次 pivot）**：VLM 输出**零数值字段**——只有 predicate over objects + categorical action attributes；Predicate Dictionary v2.1 移除所有 numeric arg；所有数值由 WM 在数值层实例化；VLM 任务收紧到 3 个 job（Plan / Tick / Bridge），supervisor / refiner / binder 内化到 Tick | 数值参数是 robotics specific，强 VLM 教师（Opus 4.7 / GPT-5）不擅长且没必要——VLM 限定为 symbolic 让 distillation 可行且 data-efficient；同时让 VLM 与 WM 之间形成清晰契约，dual-blame logging 可归因 |
 
 ---
 
@@ -205,6 +206,166 @@ V2 plan format 的 `constraints` 字段（contact / spatial / pose / direction /
 
 ---
 
+## 3.5 Predicate Dictionary v2.1（架构第 3 次 pivot · Symbolic-only refresh）
+
+> 本节是对 §3 的修订，**取代** §3.2 与 §3.3 的字典内容。本次修订与 §4.5 [Symbolic VLM Contract](#45-symbolic-vlm-contract架构第-3-次-pivot) 配套——VLM 被限定为纯符号层，因此 Predicate Dictionary 也清洗为**零数值参数**版本。
+
+### 3.5.0 为什么再次清洗
+
+§3.2 的 v1 字典含有 `dist_lt(A, B, eps)`、`above_plane(A, plane, margin)`、`stable_for(state_pred, duration)` 等**带数值阈值**的 predicate。当时设计是 VLM 同时承担"语义判断 + 数值阈值给定"。
+
+新分工下（§4.5）：
+- VLM 只说 "A 靠近 B"（categorical），**不给阈值**
+- WM/MPC 根据任务上下文决定 "靠近" 等于 5cm 还是 15cm
+- Predicate Dictionary 变成 **scene-state 的纯符号评估器**，与数值层彻底解耦
+
+这次清洗的影响范围：
+- VLM 输出 schema 不再含 numeric arg
+- ~26k 条已生成 plan.json 需要再次 migration（去 numeric）
+- MPC 端需补一个"categorical → numeric"转换器（基于任务类型的查表 + WM 学习），但**这层在 VLM 之下，不影响 VLM 训练**
+
+### 3.5.1 新字典分类（共 22 个 predicate）
+
+**Spatial（9 个）**——评估 scene 中物体的空间关系：
+
+| Predicate | 签名 | 语义 |
+|---|---|---|
+| `above(A, B)` | (obj, obj) → bool | A 在 B 正上方（z 高且 xy 重合）|
+| `on_top_of(A, B)` | (obj, obj) → bool | A 接触 B 顶面 |
+| `inside(A, B)` | (obj, obj) → bool | A 包含于 B 内部 |
+| `near(A, B)` | (obj, obj) → bool | A 靠近 B（**WM 决定具体距离阈值**）|
+| `far(A, B)` | (obj, obj) → bool | A 远离 B |
+| `left_of(A, B)` / `right_of(A, B)` | (obj, obj) → bool | 相对水平位置 |
+| `front_of(A, B)` / `behind(A, B)` | (obj, obj) → bool | 相对深度位置 |
+
+**Contact（3 个）**——评估接触/握持状态：
+
+| Predicate | 签名 | 语义 |
+|---|---|---|
+| `touching(A, B)` | (obj, obj) → bool | A 与 B 物理接触 |
+| `grasped(arm, obj)` | (arm, obj) → bool | arm 抓握 obj（不评估力度）|
+| `supported(A, B)` | (obj, obj) → bool | A 由 B 支撑（受重力下不掉）|
+
+**Pose（4 个）**——评估物体姿态：
+
+| Predicate | 签名 | 语义 |
+|---|---|---|
+| `upright(A)` | (obj) → bool | A 处于直立姿态（容器开口朝上等）|
+| `tilted(A)` | (obj) → bool | A 倾斜（与 upright 不互斥，可同时为 true 例如轻微倾斜）|
+| `stable(A)` | (obj) → bool | A 在 scene 中持续不动 |
+| `aligned(A, B)` | (obj/axis, obj/axis) → bool | A 与 B 主轴方向对齐 |
+
+**Safety（1 个）**：
+
+| Predicate | 签名 | 语义 |
+|---|---|---|
+| `clear_of(A, B_set)` | (obj, obj-set) → bool | A 与 B_set 中任一物体无碰撞且保持距离 |
+
+**Existential（3 个）**——支持 binding-mode lazy（见 §4.5）：
+
+| Predicate | 签名 | 语义 |
+|---|---|---|
+| `count_in_state(class, state_pred, op, n)` | (class, predicate, comp_op, int) → bool | 类 class 的物体中处于 state_pred 的数量满足比较 |
+| `exists_with_property(class, props)` | (class, predicate-list) → bool | 存在 class 实例满足全部 props |
+| `all_of_class_in_state(class, state_pred)` | (class, predicate) → bool | 所有 class 实例都处于 state_pred |
+
+**Event predicates（2 个）**——评估时序而非 scene state：
+
+| Predicate | 签名 | 语义 |
+|---|---|---|
+| `before(event_a, event_b)` | (event, event) → bool | event_a 时序早于 event_b（handover 关键）|
+| `simultaneous(event_a, event_b, tolerance)` | (event, event, "tight" \| "loose") → bool | 两个事件近乎同时（co-manipulation 关键）；tolerance 是 categorical 不是数值 |
+
+**总计 22 predicate**。比 v1 字典（18 个）略多——清洗主要发生在**移除 numeric arg**，不是减少 predicate 数量。
+
+### 3.5.2 从 §3.2 移除的 predicate（与替代方案）
+
+| v1 字典中的 predicate | 状态 | 替代方案 |
+|---|---|---|
+| `dist_lt(A, B, eps)` | **移除** | `near(A, B)` —— WM 根据任务决定 eps |
+| `above_plane(A, plane, margin)` | **移除** | `clear_of(A, [plane])` —— WM 决定 margin |
+| `inside_workspace(arm, point)` | **移除** | 移到 Embodiment Grounder（不是 scene predicate）|
+| `stable_for(state_pred, duration)` | **移除** | `stable(A)` 持续评估，duration 由 supervisor 计时 |
+| `approach_along(arm, dir)` | **移除** | 数值方向向量改为 action 的 `direction_hint: front \| back \| top \| side` |
+| `collision_free(A, B)` | **保留并改名** | 改为 `clear_of(A, [B])`，更一致 |
+| `perpendicular(A_axis, B_axis)` | **可表达** | 用 `aligned(A, B)` 的 categorical 修饰，或保留独立 predicate |
+| `grasp_stable(arm, obj)` | **简化为 `grasped(arm, obj)`** | "stable" 的部分由 WM 在数值层决定 |
+
+### 3.5.3 Action attributes（不是 predicate，挂在 action 上）
+
+VLM 描述"如何做动作"的部分**不进 Predicate Dictionary**，作为 action object 的 categorical 属性：
+
+```json
+{
+  "action": "grasp",
+  "target": "bowl_a",
+  "manner": {
+    "speed":     "slow",      // slow | normal | fast
+    "contact":   "gentle",    // gentle | firm | tap
+    "direction": "top"        // top | side | front | back
+  }
+}
+```
+
+WM 拿到这些 categorical hint 后映射到数值：
+- `slow` → 0.05 m/s（pick-place 类）or 0.02 m/s（pour 类）
+- `gentle` → max_force = 3 N
+- `top` → approach 方向 = (0, 0, -1)
+
+**Mapping 表是 WM 的实现细节，VLM 不感知**。
+
+### 3.5.4 Coordination attributes（plan 级别 metadata）
+
+```json
+{
+  "task": "...",
+  "coordination_hints": {
+    "bimanual_required": true,
+    "requires_handover": false,
+    "primary_arm": "either"
+  }
+}
+```
+
+不是 predicate，是 plan-level annotation，供 Embodiment Grounder 消费。
+
+### 3.5.5 三方共用的实现位置（不变）
+
+`mpc/predicates.py`（单一权威实现）。每个 predicate 提供：
+
+```python
+class Predicate:
+    name: str
+    arity: int
+    arg_types: List[str]      # 只允许: obj, class, predicate, "tight"|"loose" 等 categorical
+    category: str             # spatial | contact | pose | safety | existential | event
+    
+    def evaluate(self, scene_state, args) -> bool:
+        """硬判断"""
+    
+    def cost(self, scene_state, args) -> float:
+        """软代价，由 WM 调用，不直接暴露给 VLM"""
+```
+
+注意：`cost()` 仍存在但**不再有 VLM 调用路径**——它只在 WM 数值化时被消费。
+
+### 3.5.6 训练数据 migration（第 2 次）
+
+- 第 1 次 migration（v1→v2）：自然语言 → predicate dictionary，已完成
+- 第 2 次 migration（v2→v2.1）：移除带 numeric arg 的 predicate
+
+```json
+// v2（含数值）
+{"pred": "dist_lt", "args": ["cup_center", "target_point", 0.05], "role": "progress"}
+
+// v2.1（symbolic）
+{"pred": "near", "args": ["cup_center", "target_point"], "role": "progress"}
+```
+
+成本：另一次 gpt-5-mini batch annotation，半天。
+
+---
+
 ## 4. VLM-Planner（修订）
 
 ### 4.1 角色（不变）
@@ -317,6 +478,226 @@ V2 plan format 的 `constraints` 字段（contact / spatial / pose / direction /
 ### 4.4 训练目标修订
 - V2 LoRA 训练目标 schema 需要更新为上述 predicate dictionary 严格调用形式（见 §3.4）。
 - 添加 predicate-level metric 到 score.py：goal predicate 命中率、constraint predicate F1、不在字典内的 predicate 比例（应为 0）。
+
+---
+
+## 4.5 Symbolic VLM Contract（架构第 3 次 pivot）
+
+> 本节是对 §4 的修订，**取代** §4.3 / §4.3.1 中允许数值字段的部分。本次修订与 §3.5 配套——VLM 的 I/O schema 严格不含数值字段。
+
+### 4.5.0 Contract 一句话
+
+> **VLM 操作于 symbolic 空间——它说"靠近"、"抓住"、"在 ... 上方"、"换个 affordance 试试"，但永远不说 0.05 m/s、8 N、5cm。所有数值由 WM 在数值层实例化。**
+
+### 4.5.1 VLM 的三个 job（其他全砍）
+
+之前 v2 把 VLM 拆出 4 个角色（Planner / Refiner / Supervisor / Binder）。这次收紧到 **3 个 job，1 个模型**：
+
+| Job | 触发 | 输入 | 输出 |
+|---|---|---|---|
+| **A. Plan** | task 开始 1 次 | task + scene RGB-D | symbolic plan |
+| **B. Tick** | 每 stage 边界 1 次 | plan + last outcome (predicate-form) + 当前 scene | symbolic adjustment |
+| **C. Bridge** | A 与 B 隐含 | 语言指代 ↔ 场景实体 | resolved binding |
+
+之前的 Supervisor / Refiner / Binder 全部内化到 Tick 里：
+- Supervisor 的 6 个 decision → Tick 的 `judgment` 字段
+- Refiner 的 stage 修改 → Tick 的 `adjustment` 字段
+- Binder 的 deferred ref 绑定 → Tick 的 adjustment.rebind_ref 操作
+
+**统一带来的简化**：单一 LoRA、单一 prompt 框架、单一评测目标。
+
+### 4.5.2 Plan I/O schema（symbolic-only）
+
+```json
+{
+  "task": "stack three bowls",
+  "think": "<reasoning trace>",
+  "coordination_hints": {
+    "bimanual_required": false,
+    "requires_handover": false,
+    "primary_arm": "either"
+  },
+  "binding_mode_hint": "lazy",
+  "goal": [
+    {"pred": "count_in_state",
+     "args": ["bowl", "stacked", ">=", 3]}
+  ],
+  "global_constraints": [
+    {"pred": "upright", "args": ["each:bowl"]},
+    {"pred": "clear_of", "args": ["each:bowl", ["knife", "edge_of_table"]]}
+  ],
+  "steps": [
+    {
+      "stage_idx": 1,
+      "action": "grasp",
+      "target_selector": "any:bowl",
+      "affordance_region": "rim_top",
+      "manner": {
+        "speed": "normal",
+        "contact": "gentle",
+        "direction": "top"
+      },
+      "preconds":  [],
+      "postconds": [{"pred": "grasped", "args": ["?picked_1"]}],
+      "constraints": [{"pred": "upright", "args": ["?picked_1"]}],
+      "interaction_type": "single_contact",
+      "commit_on_complete": "?picked_1"
+    }
+  ]
+}
+```
+
+**禁止字段**（如果出现 → schema validation 拒绝）：
+- `approach_speed_max: 0.1`（数值）
+- `max_force: 8.0`（数值）
+- `mpc_horizon: 8`（数值）
+- `target_point: [0.5, 0.3, 0.1]`（坐标）
+- `dist_lt`、`above_plane` 等带 numeric arg 的 predicate
+- 任何 float / int 值（除了 `count_in_state` 的 n 参数和 stage_idx）
+
+**允许字段**：
+- Predicate over objects（无 numeric arg）
+- Categorical manner attributes（slow / normal / fast 等）
+- Object references（id 或 selector）
+- Deferred references（`?name`）
+- Enum 字段（mpc_mode 改为 `interaction_type`：free_motion / single_contact / multi_contact）
+
+### 4.5.3 Tick I/O schema（symbolic-only）
+
+```json
+// INPUT
+{
+  "task": "stack three bowls",
+  "plan": {...},
+  "current_stage_idx": 2,
+  "last_stage_outcome": {
+    "stage_idx": 1,
+    "status": "completed",
+    "actual_bindings": {"?picked_1": "bowl_id_5"},
+    "predicate_state": {
+      "grasped[bowl_5]": true,
+      "upright[bowl_5]": true,
+      "near[ee, bowl_2]": false
+    }
+  },
+  "current_scene": "<RGB-D + 关键 predicate state>",
+  "wm_alerts": [
+    {
+      "level": "warning",
+      "alert": "predicted_violation",
+      "predicate": {"pred": "upright", "args": ["pot"]},
+      "reason": "WM 预测 pot 在 stage 3 末倾斜"
+    }
+  ]
+}
+
+// OUTPUT
+{
+  "think": "stage 1 顺利抓 bowl_5。接下来要把它放到另一个碗上。scene 里 bowl_2 距离最近且平稳，作为 ?second_bowl。",
+  "judgment": "adjust",
+  "adjustment": {
+    "rebind_ref": {"?second_bowl": "bowl_id_2"}
+  },
+  "reason": "binding deferred ref ?second_bowl"
+}
+```
+
+### 4.5.4 Tick adjustment 词汇表（共 7 个 symbolic 操作）
+
+VLM 在 Tick 阶段可以做且**只能做**这 7 种修改：
+
+| 操作 | Schema | 用途 |
+|---|---|---|
+| `rebind_ref` | `{"?ref": "actual_id"}` | 绑 deferred reference |
+| `swap_stages` | `[from_idx, to_idx]` | 交换两个 stage 顺序 |
+| `insert_stage` | `{"after_idx": k, "stage": {...}}` | 插入中间 stage（如紧急 handover）|
+| `remove_stage` | `{"stage_idx": k, "reason": "postcond already satisfied"}` | 跳过已完成 stage |
+| `change_action_type` | `{"stage_idx": k, "from": "grasp", "to": "handover_grasp"}` | 升降级动作类型 |
+| `update_predicate_set` | `{"stage_idx": k, "add": [...], "remove": [...]}` | 加 / 减 predicate 约束 |
+| `change_affordance_region` | `{"stage_idx": k, "from": "rim_top", "to": "handle_left"}` | 切 affordance |
+
+**全部都是符号操作**。没有任何"调一个数"的选项。
+
+### 4.5.5 Judgment 词汇表（6 个选项）
+
+| Judgment | 语义 | 是否必须给 adjustment |
+|---|---|---|
+| `continue` | 下一 stage 按原 plan 跑 | 否 |
+| `adjust` | 下一 stage 需要符号修改 | **是**（必须给至少 1 个 adjustment）|
+| `backtrack` | 退回前面某 stage 重做 | 给 `{"backtrack_to_idx": k}` |
+| `replan` | 当前 plan 不可救，需 full re-plan | 否（触发新一轮 Plan job）|
+| `abort` | 终止，请人介入 | 否（带 abort reason）|
+| `finished` | goal 已满足，提前结束 | 否 |
+
+### 4.5.6 VLM ↔ WM 接口契约
+
+```
+VLM 写给 WM 的：
+  - predicate over object（symbolic）
+  - manner attributes（categorical）
+  - interaction_type（categorical）
+  - coordination_hints（boolean / enum）
+  - affordance_region（命名字符串，来自冻结的 ~30 region vocab）
+
+WM 写给 VLM 的（作为 Tick input）：
+  - last stage outcome 的 predicate_state（boolean dict）
+  - wm_alerts（categorical level + predicate identity + 自然语言 reason）
+  - actual_bindings（id resolution）
+
+WM 自己处理但不写给 VLM 的：
+  - 所有 numeric: force, velocity, position, time
+  - MPC weights, PointWorld rollout horizon
+  - IK solutions, joint trajectories
+```
+
+**接口的形式化好处**：VLM 训练目标里**没有任何 numeric label**——这让 distillation from strong VLM (Opus 4.7 / GPT-5) 变得 trivial，因为强 VLM 不擅长输出 robotics 数值。
+
+### 4.5.7 Dual-blame logging（debug 必需）
+
+VLM 不出数值后，**失败归因更难**——出问题时可能是 VLM 符号错（predicate 表达不准）也可能是 WM 数值化错（categorical → numeric 表查得不对）。
+
+每次 stage 失败都必须 log 三元组：
+
+```json
+{
+  "vlm_output": {... symbolic plan / adjustment ...},
+  "wm_translation": {... numeric instantiation, controller params, MPC weights ...},
+  "actual_outcome": {... sim/real measured state ...},
+  "ground_truth_predicate_eval": {... 用 Dictionary 在 outcome 上跑出来 ...}
+}
+```
+
+归因规则：
+- 若 `vlm_output` 的 predicate 与 `ground_truth_predicate_eval` 一致 → VLM 没错，是 WM 的数值化错 / 物理执行错
+- 若不一致 → VLM 给出了 unsatisfiable 或不 grounded 的 predicate → VLM 错
+
+这个 log 是后续训练（VLM 端 + WM 端）的 root-cause 数据。**没有 dual-blame log，整个 contract 系统 debug 不动**。
+
+### 4.5.8 Distillation 影响（与 §11.6 的 Streaming Refiner 协同）
+
+把 VLM 限定为 symbolic 后，**强 VLM 教师蒸馏路线明确**：
+
+- Teacher：Claude Opus 4.7 vision / GPT-5 / Gemini 2.5 Pro
+- Teacher 的工作 100% 在它擅长的范围内（scene + relation + symbolic plan）
+- Sim 退化为 **verifier**——校验 teacher 的 symbolic output 是否 grounded（all_resolvable_refs, no_predicate_outside_dict, Embodiment Grounder pass）
+- Student：RoboBrain 4B / 8B 单 LoRA（Plan + Tick 共用，prompt 用 `[PLAN]` / `[TICK]` token 分支）
+- 数据规模：Plan ~5–10k 条 + Tick ~3–5k 条
+- 关键技术：Chain-of-Thought 蒸馏（teacher 的 `think` 完整保留在 target 里）+ JSON-mode 强制 schema
+
+详见 §12 (Training Pipeline) 的 distillation 章节（待写）。
+
+### 4.5.9 与之前章节的 supersedes 关系
+
+| 之前章节 | 现状 |
+|---|---|
+| §3.2 第一版 predicate 集合（约 18 个） | **被 §3.5.1 取代** |
+| §3.3 设计约束 | 仍有效，但"参数类型严格"扩充为"无 numeric arg"|
+| §4.3 输出 schema（数值字段示例） | **被 §4.5.2 取代** |
+| §4.3.1 v2 新字段（mpc_mode A/B/C, mpc_horizon, pointworld_focus_objects, dist_lt 等）| `mpc_horizon` 移除；`mpc_mode` 改名为 `interaction_type` (categorical)；`pointworld_focus_objects` 保留（categorical）；其余被 §4.5.2 取代 |
+| §8.3 Supervisor 6 决策 | 内化为 §4.5.5 的 Tick judgment |
+| §11.6.6 Critique 格式 | 内化为 §4.5.3 的 Tick input |
+
+§4.5 是当前 VLM 行为的**唯一权威定义**。
 
 ---
 
@@ -1708,6 +2089,8 @@ v2 框架的核心简化和强化：
   - **新增 Streaming Plan Refinement**（§11.6，执行中并行精化 · Quick Check ~1–2s 启动 + 后台 Refiner 维护 lookahead 窗口）
   - **新增 Critique Synthesizer**（§11.6.6，根因分析翻译层，**单 stage 粒度** PointWorld violations → 结构化 critique）
   - **新增 supervisor `force_refine_now` 紧急通道**（§11.6.7，取代 v2 早期的 `refine` decision）
+  - **新增 Symbolic VLM Contract（§4.5）+ Predicate Dictionary v2.1（§3.5）—— 架构第 3 次 pivot**：VLM 限定为纯符号层（Plan / Tick / Bridge 三 job），输出零数值字段；Predicate Dictionary 移除所有 numeric arg；supervisor / refiner / binder 内化到 Tick；为强 VLM 教师蒸馏铺路（Opus 4.7 / GPT-5 → 4B/8B student）
+  - **删除（被 §4.5 取代）**：旧 v2 把 VLM 拆 4 个角色（Planner / Refiner / Supervisor / Binder）的复杂方案
 
 研究 claim 收紧：
   - P1: VLM-trained affordance region + LangSAM > zero-shot keypoint
@@ -1729,3 +2112,21 @@ L2.5 + Streaming Refinement 引入后的可证伪 claim：
 > VLM 不知道身体；MPC 三档共存（不强制预测未来）；Supervisor 不修改动作；L2.5 不修改 plan 结构；Streaming Refiner 不阻塞 main loop；VLA 不验证安全。
 >
 > 每个模块只做自己擅长的事；VLM 的 world knowledge 在 **plan 阶段 + runtime（L2.5）+ 并行精化（Refiner）+ 异常监督（L3）** 四个时机经济地参与，而不是阻塞或缺席。**Lazy evaluation of expensive predictions** + **执行与精化并行** + **Stage A 始终兜底**——是贯穿 MPC 三档选档、L2.5 cache/skip/fallback、Streaming Refiner lookahead/fallback 的统一设计哲学。
+
+---
+
+## 16. 架构 pivot 历史（v2 期内）
+
+v2 这份文档经历了 3 次架构 pivot，每次都是**收紧而非扩张**：
+
+| Pivot | 触发 | 改动核心 | 章节 |
+|---|---|---|---|
+| **Pivot 1（v1 → v2）** | 5/20 讨论：RGB-D、双臂、VLM 双角色 | 拆出 Embodiment Grounder + VLM-Supervisor；引入 Predicate Dictionary；约束分 Sequencing / Synchronization | §0 全部 + §3, §5, §8 |
+| **Pivot 2（v2 → v2 streaming）** | "执行前 ~30s 闭环延时太高" | Pre-Execution Refinement → Streaming Refinement；新增 D6/D7/D8 三条纪律 | §11.6 全部重写 |
+| **Pivot 3（v2 → v2.1 symbolic）** | "VLM 不需要懂数值参数，归 WM 做"；蒸馏 from 强 VLM 教师可行性 | Predicate Dictionary 移除 numeric arg；VLM 限定为 symbolic 3 jobs（Plan / Tick / Bridge）；supervisor / refiner / binder 内化到 Tick；为 distillation 铺路 | §3.5, §4.5, §0 新增行 |
+
+**收敛方向**：每次 pivot 都在让 VLM 的工作边界更窄、更清晰；让数值复杂度往下层（WM / MPC / Grounder）沉淀；让训练目标更可量化、可监督。这是 v2 架构稳定的信号。
+
+下一次 pivot 候选（未实施）：
+- **Pivot 4 候选**：Hybrid Distillation pipeline 写入 §12 替代单纯 LoRA SFT
+- **Pivot 5 候选**：渐进约束特化 (Progressive Constraint Specialization) 写入新 §11.7
